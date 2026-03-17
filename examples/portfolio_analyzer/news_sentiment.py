@@ -81,6 +81,44 @@ def _score_headline(title: str) -> float:
     return (pos_hits - neg_hits) / total
 
 
+def _extract_article_fields(article: dict) -> dict:
+    """Extract title, publisher, pub_date, and link from a news article.
+
+    Handles both old yfinance format (flat keys) and new format (nested under 'content').
+    """
+    # New yfinance (>= 0.2.36) nests data under 'content'
+    content = article.get("content", {})
+    if content and isinstance(content, dict):
+        title = content.get("title", "")
+        provider = content.get("provider", {})
+        publisher = provider.get("displayName", "Unknown") if isinstance(provider, dict) else "Unknown"
+        pub_date = content.get("pubDate", None)  # ISO string like "2025-03-15T..."
+        if pub_date and isinstance(pub_date, str):
+            try:
+                pub_date = pub_date[:16].replace("T", " ")  # "2025-03-15 12:30"
+            except Exception:
+                pub_date = None
+        click_url = content.get("clickThroughUrl", {})
+        link = click_url.get("url", "") if isinstance(click_url, dict) else ""
+        if not link:
+            link = content.get("canonicalUrl", {}).get("url", "")
+    else:
+        # Old yfinance format (flat keys)
+        title = article.get("title", "")
+        publisher = article.get("publisher", "Unknown")
+        link = article.get("link", "")
+        pub_date = None
+        if "providerPublishTime" in article:
+            try:
+                pub_date = dt.datetime.fromtimestamp(
+                    article["providerPublishTime"]
+                ).strftime("%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                pass
+
+    return {"title": title, "publisher": publisher, "pub_date": pub_date, "link": link}
+
+
 def fetch_stock_news(ticker: str, company_name: str) -> List[NewsItem]:
     """Fetch and score news for a single stock."""
     try:
@@ -89,9 +127,13 @@ def fetch_stock_news(ticker: str, company_name: str) -> List[NewsItem]:
     except Exception:
         raw_news = []
 
+    if not raw_news or not isinstance(raw_news, list):
+        raw_news = []
+
     items = []
     for article in raw_news[:10]:  # Last 10 articles
-        title = article.get("title", "")
+        fields = _extract_article_fields(article)
+        title = fields["title"]
         if not title:
             continue
 
@@ -103,20 +145,11 @@ def fetch_stock_news(ticker: str, company_name: str) -> List[NewsItem]:
         else:
             sentiment = "Neutral"
 
-        pub_date = None
-        if "providerPublishTime" in article:
-            try:
-                pub_date = dt.datetime.fromtimestamp(
-                    article["providerPublishTime"]
-                ).strftime("%Y-%m-%d %H:%M")
-            except (ValueError, TypeError):
-                pass
-
         items.append(NewsItem(
             title=title[:120],
-            publisher=article.get("publisher", "Unknown"),
-            published=pub_date,
-            link=article.get("link", ""),
+            publisher=fields["publisher"],
+            published=fields["pub_date"],
+            link=fields["link"],
             sentiment_score=round(score, 3),
             sentiment=sentiment,
         ))
