@@ -206,13 +206,16 @@ def render_insider_tracker(verdicts: List[StockVerdict]):
     # Divergence alerts
     divergent = [(v, s) for v, s in summaries if s.signal_vs_verdict == "Divergent"]
     if divergent:
-        console.print(Panel(
-            "\n".join(
+        lines = []
+        for v, s in divergent:
+            sig_color = "green" if s.insider_signal == "Bullish" else "red"
+            lines.append(
                 f"[bold yellow]  {s.ticker}[/bold yellow]: Insiders are "
-                f"[{{'Bullish': 'green', 'Bearish': 'red'}}.get(s.insider_signal, 'white')]{s.insider_signal}[/] "
+                f"[{sig_color}]{s.insider_signal}[/{sig_color}] "
                 f"but verdict is {v.verdict}"
-                for v, s in divergent
-            ),
+            )
+        console.print(Panel(
+            "\n".join(lines),
             title="INSIDER / VERDICT DIVERGENCES",
             border_style="yellow",
         ))
