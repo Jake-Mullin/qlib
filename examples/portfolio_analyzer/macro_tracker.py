@@ -1,248 +1,199 @@
 """
-Macroeconomic Tracker
----------------------
-Monitors leading recession indicators and macro health signals:
-  - Buffett Indicator (Market Cap / GDP)
-  - Yield Curve (10Y-2Y spread)
-  - VIX (Fear Index)
-  - S&P 500 trend
-  - Unemployment trend
-  - PMI proxy
-  - Federal Funds Rate context
-
-Uses Yahoo Finance for market data and FRED-compatible proxies.
+Macro Tracker
+-------------
+Tracks macro-economic signals that affect the overall market.
+Uses market indices and yield data as proxies.
 """
 
 import datetime as dt
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import yfinance as yf
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich import box
+
+console = Console()
 
 
 @dataclass
 class MacroSignal:
-    """A single macro indicator reading."""
+    """A single macro-economic indicator."""
     name: str
-    value: Optional[float]
-    signal: str  # "Green", "Yellow", "Red"
-    description: str
-    weight: float = 1.0  # Importance weight
+    value: float
+    signal: str  # "Bullish" / "Neutral" / "Bearish"
+    description: str = ""
 
 
 @dataclass
 class MacroDashboard:
-    """Full macro environment assessment."""
+    """Overall macro environment summary."""
     signals: List[MacroSignal] = field(default_factory=list)
-    overall_signal: str = "Neutral"  # "Risk On", "Cautious", "Risk Off"
-    overall_score: float = 0.0  # 0-10 (10 = everything great)
+    overall_signal: str = "Neutral"
+    overall_score: float = 0.0  # -1 to +1
     recession_probability: str = "Low"
-    last_updated: str = ""
-
-    def compute_overall(self):
-        signal_scores = {"Green": 10, "Yellow": 5, "Red": 1}
-        total_w = sum(s.weight for s in self.signals)
-        if total_w == 0:
-            return
-        weighted = sum(signal_scores.get(s.signal, 5) * s.weight for s in self.signals)
-        self.overall_score = round(weighted / total_w, 1)
-
-        if self.overall_score >= 7:
-            self.overall_signal = "Risk On"
-            self.recession_probability = "Low"
-        elif self.overall_score >= 4.5:
-            self.overall_signal = "Cautious"
-            self.recession_probability = "Moderate"
-        else:
-            self.overall_signal = "Risk Off"
-            self.recession_probability = "Elevated"
-
-        self.last_updated = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def _get_latest_close(ticker: str, period: str = "5d") -> Optional[float]:
+def _fetch_index_momentum(ticker: str, name: str) -> Optional[MacroSignal]:
+    """Check if a market index is above/below its 200-day moving average."""
     try:
-        hist = yf.Ticker(ticker).history(period=period)
-        if len(hist) > 0:
-            return float(hist["Close"].iloc[-1])
-    except Exception:
-        pass
-    return None
-
-
-def _get_close_n_days_ago(ticker: str, days: int) -> Optional[float]:
-    try:
-        hist = yf.Ticker(ticker).history(period=f"{days + 10}d")
-        if len(hist) >= days:
-            return float(hist["Close"].iloc[-days])
-    except Exception:
-        pass
-    return None
-
-
-def buffett_indicator() -> MacroSignal:
-    """Buffett Indicator: Total Market Cap / GDP.
-    Uses Wilshire 5000 as market cap proxy.
-    Historical GDP ~$28T (approximate, updated periodically)."""
-    wilshire = _get_latest_close("^W5000")
-    # Wilshire 5000 index value * ~1.2B gives approximate total market cap
-    # This is a rough proxy; actual calculation needs FRED GDP data
-    # We'll use a simplified version comparing S&P 500 to historical norms
-    sp500 = _get_latest_close("^GSPC")
-
-    if sp500 is None:
-        return MacroSignal("Buffett Indicator", None, "Yellow",
-                           "Could not fetch market data", weight=1.5)
-
-    # Using S&P 500 level as proxy - historical fair value ~3500-4500 in 2023-2024 terms
-    # Adjusted: >5500 = elevated, >6500 = stretched
-    if sp500 > 6000:
-        signal = "Red"
-        desc = f"S&P 500 at {sp500:.0f} - market looks stretched vs historical norms"
-    elif sp500 > 5000:
-        signal = "Yellow"
-        desc = f"S&P 500 at {sp500:.0f} - moderately elevated"
-    else:
-        signal = "Green"
-        desc = f"S&P 500 at {sp500:.0f} - reasonable valuation range"
-
-    return MacroSignal("Buffett Indicator (proxy)", sp500, signal, desc, weight=1.5)
-
-
-def yield_curve() -> MacroSignal:
-    """10Y-2Y Treasury spread. Inversion (negative) signals recession risk."""
-    # ^TNX = 10-year yield, ^IRX = 13-week T-bill (proxy for short end)
-    ten_yr = _get_latest_close("^TNX")
-    two_yr = _get_latest_close("^IRX")  # Using 13-week as proxy
-
-    if ten_yr is None or two_yr is None:
-        return MacroSignal("Yield Curve (10Y-2Y)", None, "Yellow",
-                           "Could not fetch Treasury yields", weight=2.0)
-
-    spread = ten_yr - two_yr
-    if spread < -0.5:
-        signal = "Red"
-        desc = f"Deeply inverted ({spread:.2f}%) - strong recession signal"
-    elif spread < 0:
-        signal = "Red"
-        desc = f"Inverted ({spread:.2f}%) - recession warning"
-    elif spread < 0.5:
-        signal = "Yellow"
-        desc = f"Flat curve ({spread:.2f}%) - watch closely"
-    else:
-        signal = "Green"
-        desc = f"Normal spread ({spread:.2f}%) - healthy"
-
-    return MacroSignal("Yield Curve (10Y-Short)", spread, signal, desc, weight=2.0)
-
-
-def vix_fear_index() -> MacroSignal:
-    """VIX - CBOE Volatility Index. Fear gauge for the market."""
-    vix = _get_latest_close("^VIX")
-
-    if vix is None:
-        return MacroSignal("VIX Fear Index", None, "Yellow",
-                           "Could not fetch VIX", weight=1.5)
-
-    if vix > 30:
-        signal = "Red"
-        desc = f"VIX at {vix:.1f} - extreme fear / panic levels"
-    elif vix > 20:
-        signal = "Yellow"
-        desc = f"VIX at {vix:.1f} - elevated anxiety"
-    else:
-        signal = "Green"
-        desc = f"VIX at {vix:.1f} - low fear / complacency"
-
-    return MacroSignal("VIX Fear Index", vix, signal, desc, weight=1.5)
-
-
-def sp500_trend() -> MacroSignal:
-    """S&P 500 trend: above or below 200-day moving average."""
-    try:
-        hist = yf.Ticker("^GSPC").history(period="1y")
+        hist = yf.Ticker(ticker).history(period="1y")
         if len(hist) < 200:
-            return MacroSignal("S&P 500 Trend", None, "Yellow",
-                               "Insufficient history", weight=1.0)
-
+            return None
         current = float(hist["Close"].iloc[-1])
         ma200 = float(hist["Close"].tail(200).mean())
         pct_above = ((current - ma200) / ma200) * 100
 
         if pct_above > 5:
-            signal = "Green"
-            desc = f"S&P 500 {pct_above:.1f}% above 200-DMA - bullish trend"
-        elif pct_above > -2:
-            signal = "Yellow"
-            desc = f"S&P 500 near 200-DMA ({pct_above:+.1f}%) - trend uncertain"
+            signal = "Bullish"
+        elif pct_above > -5:
+            signal = "Neutral"
         else:
-            signal = "Red"
-            desc = f"S&P 500 {pct_above:.1f}% below 200-DMA - bearish trend"
+            signal = "Bearish"
 
-        return MacroSignal("S&P 500 Trend", pct_above, signal, desc, weight=1.0)
+        return MacroSignal(
+            name=name,
+            value=round(pct_above, 2),
+            signal=signal,
+            description=f"{pct_above:+.1f}% vs 200-day MA",
+        )
     except Exception:
-        return MacroSignal("S&P 500 Trend", None, "Yellow", "Error computing trend", weight=1.0)
+        return None
 
 
-def gold_signal() -> MacroSignal:
-    """Gold price trend - safe haven demand indicator."""
-    gold_now = _get_latest_close("GC=F")
-    gold_3m = _get_close_n_days_ago("GC=F", 63)
+def _fetch_vix() -> Optional[MacroSignal]:
+    """Check VIX (fear gauge)."""
+    try:
+        hist = yf.Ticker("^VIX").history(period="5d")
+        if len(hist) == 0:
+            return None
+        vix = float(hist["Close"].iloc[-1])
 
-    if gold_now is None:
-        return MacroSignal("Gold (Safe Haven)", None, "Yellow",
-                           "Could not fetch gold price", weight=0.8)
-
-    if gold_3m:
-        change = ((gold_now - gold_3m) / gold_3m) * 100
-        if change > 10:
-            signal = "Yellow"
-            desc = f"Gold up {change:.1f}% in 3 months - flight to safety"
-        elif change > 5:
-            signal = "Yellow"
-            desc = f"Gold up {change:.1f}% in 3 months - mild safe-haven demand"
+        if vix < 15:
+            signal = "Bullish"
+            desc = "Low volatility - complacency"
+        elif vix < 25:
+            signal = "Neutral"
+            desc = "Normal volatility"
+        elif vix < 35:
+            signal = "Bearish"
+            desc = "Elevated fear"
         else:
-            signal = "Green"
-            desc = f"Gold stable ({change:+.1f}% in 3m) - no panic buying"
-    else:
-        signal = "Yellow"
-        desc = f"Gold at ${gold_now:.0f} - monitoring"
+            signal = "Bearish"
+            desc = "Extreme fear"
 
-    return MacroSignal("Gold (Safe Haven)", gold_now, signal, desc, weight=0.8)
-
-
-def dollar_strength() -> MacroSignal:
-    """US Dollar Index trend - strong dollar can hurt earnings."""
-    dxy = _get_latest_close("DX-Y.NYB")
-
-    if dxy is None:
-        return MacroSignal("US Dollar Index", None, "Yellow",
-                           "Could not fetch DXY", weight=0.8)
-
-    if dxy > 108:
-        signal = "Yellow"
-        desc = f"DXY at {dxy:.1f} - strong dollar headwind for multinationals"
-    elif dxy > 100:
-        signal = "Green"
-        desc = f"DXY at {dxy:.1f} - moderate dollar, manageable"
-    else:
-        signal = "Green"
-        desc = f"DXY at {dxy:.1f} - weak dollar tailwind for earnings"
-
-    return MacroSignal("US Dollar Index", dxy, signal, desc, weight=0.8)
+        return MacroSignal(name="VIX", value=round(vix, 2), signal=signal,
+                           description=desc)
+    except Exception:
+        return None
 
 
-def run_macro_dashboard() -> MacroDashboard:
-    """Run all macro indicators and build the dashboard."""
+def _fetch_yield_curve() -> Optional[MacroSignal]:
+    """Check 10Y-2Y Treasury spread as recession indicator."""
+    try:
+        t10 = yf.Ticker("^TNX").history(period="5d")
+        t2 = yf.Ticker("^IRX").history(period="5d")  # 3-month as proxy
+
+        if len(t10) == 0 or len(t2) == 0:
+            return None
+
+        ten_yr = float(t10["Close"].iloc[-1])
+        short_rate = float(t2["Close"].iloc[-1])
+        spread = ten_yr - short_rate
+
+        if spread > 1.0:
+            signal = "Bullish"
+            desc = "Normal yield curve"
+        elif spread > 0:
+            signal = "Neutral"
+            desc = "Flattening yield curve"
+        else:
+            signal = "Bearish"
+            desc = "Inverted yield curve - recession signal"
+
+        return MacroSignal(name="Yield Curve", value=round(spread, 2),
+                           signal=signal, description=desc)
+    except Exception:
+        return None
+
+
+def fetch_macro_dashboard() -> MacroDashboard:
+    """Build the complete macro dashboard."""
     dashboard = MacroDashboard()
-    print("  Fetching macro indicators...")
 
-    dashboard.signals.append(buffett_indicator())
-    dashboard.signals.append(yield_curve())
-    dashboard.signals.append(vix_fear_index())
-    dashboard.signals.append(sp500_trend())
-    dashboard.signals.append(gold_signal())
-    dashboard.signals.append(dollar_strength())
+    # Fetch all signals
+    indicators = [
+        _fetch_index_momentum("^GSPC", "S&P 500 Trend"),
+        _fetch_index_momentum("^IXIC", "Nasdaq Trend"),
+        _fetch_index_momentum("^DJI", "Dow Jones Trend"),
+        _fetch_vix(),
+        _fetch_yield_curve(),
+    ]
 
-    dashboard.compute_overall()
+    dashboard.signals = [s for s in indicators if s is not None]
+
+    # Compute overall score
+    if dashboard.signals:
+        score_map = {"Bullish": 1.0, "Neutral": 0.0, "Bearish": -1.0}
+        scores = [score_map.get(s.signal, 0) for s in dashboard.signals]
+        dashboard.overall_score = round(sum(scores) / len(scores), 2)
+
+        if dashboard.overall_score > 0.3:
+            dashboard.overall_signal = "Bullish"
+        elif dashboard.overall_score > -0.3:
+            dashboard.overall_signal = "Neutral"
+        else:
+            dashboard.overall_signal = "Bearish"
+
+        # Recession check
+        bearish_count = sum(1 for s in dashboard.signals if s.signal == "Bearish")
+        if bearish_count >= 3:
+            dashboard.recession_probability = "High"
+        elif bearish_count >= 2:
+            dashboard.recession_probability = "Moderate"
+        else:
+            dashboard.recession_probability = "Low"
+
     return dashboard
+
+
+def get_macro_adjustment(dashboard: MacroDashboard) -> float:
+    """Convert macro signals to a score adjustment for stock verdicts."""
+    # Range: -0.5 to +0.5
+    return round(dashboard.overall_score * 0.5, 2)
+
+
+def render_macro_dashboard(dashboard: MacroDashboard):
+    """Render macro environment to terminal."""
+    signal_c = {"Bullish": "green", "Neutral": "yellow", "Bearish": "red"}.get(
+        dashboard.overall_signal, "white")
+    recession_c = {"Low": "green", "Moderate": "yellow", "High": "red"}.get(
+        dashboard.recession_probability, "white")
+
+    header = (
+        f"[{signal_c}]{dashboard.overall_signal}[/{signal_c}]  |  "
+        f"Score: {dashboard.overall_score:+.2f}  |  "
+        f"Recession Risk: [{recession_c}]{dashboard.recession_probability}[/{recession_c}]"
+    )
+    console.print(Panel(header, title="MACRO ENVIRONMENT", border_style=signal_c,
+                        title_align="left"))
+
+    table = Table(box=box.SIMPLE)
+    table.add_column("Indicator", width=20)
+    table.add_column("Signal", justify="center", width=10)
+    table.add_column("Value", justify="right", width=10)
+    table.add_column("Description", width=35)
+
+    for s in dashboard.signals:
+        sc = {"Bullish": "green", "Neutral": "yellow", "Bearish": "red"}.get(s.signal, "white")
+        table.add_row(
+            s.name,
+            f"[{sc}]{s.signal}[/{sc}]",
+            f"{s.value:.2f}",
+            s.description,
+        )
+
+    console.print(table)
+    console.print()
