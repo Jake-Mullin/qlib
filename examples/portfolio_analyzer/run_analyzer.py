@@ -38,7 +38,8 @@ DEFAULT_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "MU"
 
 
 def analyze_portfolio(tickers: List[str], show_details: bool = True,
-                      export_path: str = None) -> List[StockVerdict]:
+                      export_path: str = None, notion_api_key: str = None,
+                      notion_db_id: str = None) -> List[StockVerdict]:
     """Run the full analysis pipeline."""
     console.print("\n[bold blue]ULTIMATE STOCK PORTFOLIO ANALYZER[/bold blue]")
     console.print(f"[dim]Analyzing {len(tickers)} stocks: {', '.join(tickers)}[/dim]\n")
@@ -116,6 +117,16 @@ def analyze_portfolio(tickers: List[str], show_details: bool = True,
     # Export if requested
     if export_path:
         export_results(verdicts, macro, export_path)
+
+    # Push to Notion if configured
+    if notion_api_key and notion_db_id:
+        try:
+            from .notion_integration import push_to_notion
+            console.print("\n[bold cyan]Pushing to Notion...[/bold cyan]")
+            push_to_notion(notion_api_key, notion_db_id, verdicts, macro)
+            console.print("[green]Notion database updated![/green]")
+        except Exception as e:
+            console.print(f"[red]Notion update failed: {e}[/red]")
 
     return verdicts
 
@@ -196,12 +207,22 @@ def main():
                         help="Skip individual stock deep dives")
     parser.add_argument("--export", type=str, default=None,
                         help="Export results to JSON file (for n8n automation)")
+    parser.add_argument("--notion-key", type=str, default=None,
+                        help="Notion API key (or set NOTION_API_KEY env var)")
+    parser.add_argument("--notion-db", type=str, default=None,
+                        help="Notion database ID (or set NOTION_DATABASE_ID env var)")
     args = parser.parse_args()
+
+    import os
+    notion_key = args.notion_key or os.environ.get("NOTION_API_KEY")
+    notion_db = args.notion_db or os.environ.get("NOTION_DATABASE_ID")
 
     analyze_portfolio(
         tickers=args.tickers,
         show_details=not args.no_details,
         export_path=args.export,
+        notion_api_key=notion_key,
+        notion_db_id=notion_db,
     )
 
 

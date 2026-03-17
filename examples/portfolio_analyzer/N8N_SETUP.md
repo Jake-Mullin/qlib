@@ -1,153 +1,226 @@
 # n8n Workflow Setup - Ultimate Stock Portfolio Analyzer
 
-This guide explains how to set up the automated daily portfolio analysis workflow in n8n.
+Automated daily portfolio analysis with **Gmail** email reports and **Notion** database updates.
 
 ## Overview
 
-The workflow runs the Portfolio Analyzer every weekday at 6:00 AM EST, parses the results, and sends a formatted summary to Slack. If the analyzer fails, an error notification is sent instead.
+Every weekday at 6:00 AM EST, this workflow:
+
+1. Runs the Portfolio Analyzer (fetches live data, runs 7 investor agents)
+2. Parses the results
+3. Sends a **styled HTML email** to your Gmail with top picks, earnings alerts, and full portfolio
+4. Updates your **Notion database** - each stock gets a row with verdict, score, target, etc.
+5. If anything fails, sends you an error email instead
 
 **Workflow nodes:**
 
-1. **Cron Trigger** - Fires at 6:00 AM EST, Monday through Friday
-2. **Execute Command** - Runs the analyzer script with JSON export
-3. **Read File** - Loads the exported JSON results
-4. **Parse JSON** - Extracts macro data, verdicts, top picks, and earnings alerts
-5. **Format Message** - Builds a human-readable summary report
-6. **Send to Slack** - Posts the report via webhook
-7. **Error Handler** - Catches script failures and sends an error notification
+```
+[Cron 6AM] -> [Run Analyzer] -> [Read JSON] -> [Parse Results] -> [Format Email] -> [Send Gmail]
+                    |                                  |
+                    |                                  +-----------> [Update Notion DB]
+                    |
+                    +-(on error)-> [Format Error Email] -> [Send Error Gmail]
+```
 
 ## Prerequisites
 
-- n8n instance (self-hosted or cloud), version 1.0 or later
-- Python 3.8+ with `yfinance` and `rich` installed on the n8n host
-- Network access to Yahoo Finance from the n8n host
-- The qlib repository cloned at `/home/user/qlib`
+- **n8n** instance (self-hosted or cloud), version 1.0+
+- **Python 3.8+** with `yfinance` and `rich` installed on the n8n host
+- **Gmail account** (for receiving daily reports)
+- **Notion account** (free tier works - for the visual database)
+- Network access to Yahoo Finance and Notion API
 
-## Importing the Workflow
+## Step 1: Import the Workflow
 
-1. Open your n8n instance in a browser.
-2. Go to **Workflows** in the left sidebar.
-3. Click the **"..."** menu (top right) and select **Import from File**.
-4. Select `n8n_workflow.json` from this directory.
-5. The workflow will appear in your workflow list. Open it to configure.
+1. Open your n8n instance in a browser
+2. Go to **Workflows** in the left sidebar
+3. Click **"..."** menu (top right) > **Import from File**
+4. Select `n8n_workflow.json` from this directory
+5. The workflow will appear - open it to configure
 
-Alternatively, you can copy the contents of `n8n_workflow.json` and use **Import from URL / Paste** in the n8n UI.
+## Step 2: Set Up Gmail
 
-## Environment Variables
+n8n uses OAuth2 to send emails through your Gmail. No app passwords needed.
 
-Set these environment variables in your n8n instance under **Settings > Variables** (or via `N8N_` prefixed env vars if self-hosted):
+1. In n8n, go to **Credentials** (left sidebar)
+2. Click **Add Credential** > search for **Gmail OAuth2**
+3. Follow the setup wizard:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a project (or use an existing one)
+   - Enable the **Gmail API** (APIs & Services > Library > search "Gmail API")
+   - Go to **APIs & Services > Credentials**
+   - Click **Create Credentials > OAuth client ID**
+   - Application type: **Web application**
+   - Add n8n's redirect URI (n8n will show you the exact URL)
+   - Copy the **Client ID** and **Client Secret** into n8n
+4. Click **Sign in with Google** in n8n and authorize
+5. In the workflow, click both Gmail nodes ("Send Gmail" and "Send Error Gmail") and select your new credential
+
+**Set your email address:** Either set the `PORTFOLIO_EMAIL` environment variable, or edit the "Send To" field directly in both Gmail nodes.
+
+## Step 3: Set Up Notion
+
+### Create the Integration
+
+1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
+2. Click **New Integration**
+3. Name it "Portfolio Analyzer"
+4. Select your workspace
+5. Click **Submit** and copy the **Internal Integration Token** (starts with `ntn_`)
+
+### Create the Database
+
+1. In Notion, create a new **full-page database** (type `/database` and select "Database - Full page")
+2. Name it "Portfolio Tracker"
+3. Add these columns (the n8n workflow will populate them):
+
+| Column Name | Type | Notes |
+|---|---|---|
+| Ticker | Title | (default first column) |
+| Company | Text | |
+| Verdict | Select | Options: Buy (green), Hold (yellow), Pass (gray), Avoid (red) |
+| Score | Number | Format: Number |
+| Price | Number | Format: Dollar |
+| 1Y Target | Number | Format: Dollar |
+| Upside % | Number | Format: Percent |
+| Sector | Select | Auto-populated |
+| Earnings Date | Date | |
+| Earnings Countdown | Number | Days until earnings |
+| Valuation Score | Number | |
+| Quality Score | Number | |
+| Momentum Score | Number | |
+| Agent Consensus | Number | |
+| Bull Case | Text | |
+| Bear Case | Text | |
+| Top Bull Agent | Text | |
+| Top Bear Agent | Text | |
+| Last Updated | Date | |
+
+4. **Share with your integration:** Click "..." (top right of the database page) > **Connections** > search for "Portfolio Analyzer" > click to add
+
+5. **Copy the database ID:** From the database URL:
+   ```
+   https://notion.so/your-workspace/DATABASE_ID_HERE?v=...
+   ```
+   The database ID is the 32-character string before the `?`
+
+### Alternative: Auto-Create the Database
+
+Instead of manually creating columns, you can use the Python module to create it:
+
+```python
+from examples.portfolio_analyzer.notion_integration import NotionClient
+
+client = NotionClient("your-notion-api-key")
+db_id = client.create_database("parent-page-id", "Portfolio Tracker")
+print(f"Database created: {db_id}")
+```
+
+### Set Environment Variables
+
+In your n8n instance, set these variables (Settings > Variables, or via env):
 
 | Variable | Required | Description |
 |---|---|---|
-| `SLACK_WEBHOOK_URL` | Yes | Your Slack incoming webhook URL |
+| `NOTION_API_KEY` | Yes | Your Notion integration token (`ntn_...`) |
+| `NOTION_DATABASE_ID` | Yes | The 32-char database ID from the URL |
+| `PORTFOLIO_EMAIL` | Yes | Your Gmail address for reports |
 
-For self-hosted n8n, you can set this in your `.env` file or docker-compose:
+For self-hosted n8n (docker-compose):
 
-```bash
-# In your n8n .env file or docker-compose environment section
-SLACK_WEBHOOK_URL=<your-slack-webhook-url-here>
+```yaml
+environment:
+  - NOTION_API_KEY=ntn_your_token_here
+  - NOTION_DATABASE_ID=your_database_id_here
+  - PORTFOLIO_EMAIL=you@gmail.com
 ```
 
-If you prefer not to use environment variables, you can edit the webhook URL directly in the "Send to Slack" and "Send Error to Slack" nodes.
+## Step 4: Activate
 
-## Configuring the Slack Webhook
+1. Open the workflow in n8n
+2. Toggle the **Active** switch (top right) to ON
+3. The workflow will now run every weekday at 6 AM EST
 
-1. Go to [https://api.slack.com/apps](https://api.slack.com/apps).
-2. Click **Create New App** (or select an existing app).
-3. Choose **From scratch**, give it a name (e.g., "Portfolio Analyzer"), and select your workspace.
-4. In the app settings, go to **Incoming Webhooks** and toggle it **On**.
-5. Click **Add New Webhook to Workspace**.
-6. Select the channel where reports should be posted and click **Allow**.
-7. Copy the webhook URL (it looks like `https://hooks.slack.com/services/T.../B.../xxx`).
-8. Set it as the `SLACK_WEBHOOK_URL` environment variable (see above).
-
-### Using Email Instead of Slack
-
-To send reports via email instead of Slack:
-
-1. Delete the "Send to Slack" and "Send Error to Slack" nodes.
-2. Add an **Email Send** node (n8n-nodes-base.emailSend) in their place.
-3. Configure your SMTP credentials in n8n under **Credentials**.
-4. Set the email subject to something like `Portfolio Report - {{$json.generated_at}}`.
-5. Set the email body to `{{$json.message}}`.
-6. Reconnect the wires from "Format Summary Message" and "Format Error Message" to the new email nodes.
+To test immediately: click **Execute Workflow** (play button) to run it once.
 
 ## Customizing the Schedule
 
-The cron trigger is set to `0 6 * * 1-5` (6:00 AM, Monday-Friday).
-
-To change it, open the "Daily 6AM EST (Weekdays)" node and modify the cron expression:
+Open the "Daily 6AM EST (Weekdays)" node and modify the cron expression:
 
 | Schedule | Cron Expression |
 |---|---|
 | Every weekday at 6:00 AM | `0 6 * * 1-5` |
 | Every weekday at 8:30 AM | `30 8 * * 1-5` |
-| Every day (including weekends) at 7:00 AM | `0 7 * * *` |
+| Every day at 7:00 AM (incl. weekends) | `0 7 * * *` |
 | Every Monday at 9:00 AM (weekly) | `0 9 * * 1` |
 | Every 4 hours on weekdays | `0 */4 * * 1-5` |
 
-**Important:** The workflow timezone is set to `America/New_York`. If your n8n instance uses a different default timezone, verify the workflow-level timezone setting under **Settings** (gear icon in the workflow editor). The cron times are interpreted in the workflow timezone.
+The workflow timezone is `America/New_York` (set in workflow settings).
 
 ## Adding or Removing Tickers
 
-The default tickers are defined in the analyzer script at:
-
-```
-/home/user/qlib/examples/portfolio_analyzer/run_analyzer.py
-```
-
-The default list is: `AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA, MU, AMD, CRM`
-
 ### Option 1: Edit the Default List
 
-Edit the `DEFAULT_TICKERS` list in `run_analyzer.py`:
+In `run_analyzer.py`, change:
 
 ```python
 DEFAULT_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "MU", "AMD", "CRM"]
 ```
 
-Add or remove tickers as needed. This changes the defaults for all invocations.
+### Option 2: Override in the n8n Command
 
-### Option 2: Override via the Command
-
-Edit the "Run Portfolio Analyzer" node in the workflow and modify the command:
+Edit the "Run Portfolio Analyzer" node command:
 
 ```bash
-cd /home/user/qlib && python -m examples.portfolio_analyzer --tickers AAPL MSFT NVDA GOOGL AMZN --export /tmp/portfolio_results.json --no-details
+cd /home/user/qlib && python -m examples.portfolio_analyzer --tickers AAPL MSFT NVDA MU --export /tmp/portfolio_results.json --no-details
 ```
 
-Use the `--tickers` flag followed by space-separated ticker symbols. This overrides the defaults without changing the source code.
-
 ### Option 3: Use an Environment Variable
-
-Modify the command in the Execute Command node to read from an env var:
 
 ```bash
 cd /home/user/qlib && python -m examples.portfolio_analyzer --tickers $PORTFOLIO_TICKERS --export /tmp/portfolio_results.json --no-details
 ```
 
-Then set `PORTFOLIO_TICKERS` as an environment variable (`AAPL MSFT NVDA`). This lets you change tickers without editing the workflow.
+Then set `PORTFOLIO_TICKERS=AAPL MSFT NVDA` as an env var.
+
+## What Your Notion Database Will Look Like
+
+Once running, your Notion database will have:
+- **Filter by Verdict** - click the filter icon to show only "Buy" stocks
+- **Sort by Score** - see your highest-conviction picks at the top
+- **Color-coded verdicts** - green for Buy, yellow for Hold, red for Avoid
+- **Earnings countdown** - sort by this to see upcoming earnings
+- **Auto-updates daily** - existing rows update, new stocks get added
+
+You can also create **Notion views** (Board, Calendar, Gallery) on the same database:
+- **Board view** grouped by Verdict = Kanban-style Buy/Hold/Pass/Avoid columns
+- **Calendar view** by Earnings Date = see when each stock reports
+- **Gallery view** = card-style overview of each stock
 
 ## Troubleshooting
 
-### The workflow runs but the script fails
+### Gmail not sending
 
-- Check that Python and dependencies are installed: `pip install yfinance rich`
-- Verify the working directory exists: `ls /home/user/qlib`
-- Run the command manually to see errors: `cd /home/user/qlib && python -m examples.portfolio_analyzer --export /tmp/portfolio_results.json --no-details`
+- Verify your Gmail OAuth2 credential is connected (green checkmark in Credentials)
+- Check that the Gmail API is enabled in Google Cloud Console
+- Check n8n execution logs for OAuth errors
+- Make sure the `PORTFOLIO_EMAIL` is set correctly
 
-### No Slack message arrives
+### Notion not updating
 
-- Verify `SLACK_WEBHOOK_URL` is set correctly in n8n environment variables.
-- Test the webhook manually: `curl -X POST -H 'Content-type: application/json' --data '{"text":"Test"}' YOUR_WEBHOOK_URL`
-- Check the n8n execution log for HTTP errors on the Slack node.
+- Verify `NOTION_API_KEY` and `NOTION_DATABASE_ID` are set
+- Make sure the database is **shared with your integration** (Connections menu)
+- Check that all column names match exactly (case-sensitive)
+- Test the API key: `curl -H "Authorization: Bearer ntn_your_key" -H "Notion-Version: 2022-06-28" https://api.notion.com/v1/users/me`
 
-### The script times out
+### Script fails / times out
 
-- The default timeout is 300 seconds (5 minutes). If you have many tickers, increase the timeout in the "Run Portfolio Analyzer" node.
-- Yahoo Finance rate limits may slow down large portfolios. Consider reducing the ticker count or adding delays in the analyzer.
+- Check Python deps: `pip install yfinance rich requests`
+- Run manually: `cd /home/user/qlib && python -m examples.portfolio_analyzer --export /tmp/test.json --no-details`
+- Increase timeout in the "Run Portfolio Analyzer" node if needed (default: 300s)
+- Yahoo Finance may rate-limit large portfolios - reduce ticker count if needed
 
 ### Timezone issues
 
-- Verify your n8n instance system timezone matches your expectations.
-- The workflow has `timezone: "America/New_York"` in its settings, which should override the instance default for this workflow.
+- The workflow has `timezone: "America/New_York"` in settings
+- Verify your n8n instance system timezone matches expectations

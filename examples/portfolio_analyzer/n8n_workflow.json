@@ -1,5 +1,5 @@
 {
-  "name": "Ultimate Stock Portfolio Analyzer - Daily Report",
+  "name": "Ultimate Stock Portfolio Analyzer - Daily Report (Gmail + Notion)",
   "nodes": [
     {
       "parameters": {
@@ -17,7 +17,7 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [200, 300],
-      "notes": "Runs Monday-Friday at 6:00 AM. Make sure your n8n instance timezone is set to America/New_York (EST) in Settings > General. The cron expression '0 6 * * 1-5' means: minute 0, hour 6, any day of month, any month, Monday(1) through Friday(5)."
+      "notes": "Runs Monday-Friday at 6:00 AM. Timezone set to America/New_York in workflow settings."
     },
     {
       "parameters": {
@@ -29,7 +29,7 @@
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [440, 300],
-      "notes": "Executes the portfolio analyzer script. Timeout set to 300s (5 min) to allow for Yahoo Finance API calls. The --no-details flag skips verbose per-stock output. Results are exported as JSON to /tmp/portfolio_results.json.",
+      "notes": "Runs the analyzer with 5-minute timeout. Results exported as JSON.",
       "onError": "continueErrorOutput"
     },
     {
@@ -42,72 +42,93 @@
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
       "position": [680, 260],
-      "notes": "Reads the exported JSON results file produced by the analyzer."
+      "notes": "Reads the exported JSON results file."
     },
     {
       "parameters": {
-        "jsCode": "// Parse the JSON results and extract key data\nconst fileContent = $input.first().json.data;\nconst results = JSON.parse(fileContent);\n\nconst macro = results.macro || {};\nconst portfolio = results.portfolio || [];\n\n// Verdict counts\nconst counts = { Buy: 0, Hold: 0, Pass: 0, Avoid: 0 };\nfor (const stock of portfolio) {\n  if (counts.hasOwnProperty(stock.verdict)) {\n    counts[stock.verdict]++;\n  }\n}\n\n// Top 3 by score\nconst sorted = [...portfolio].sort((a, b) => b.score - a.score);\nconst top3 = sorted.slice(0, 3).map(s => ({\n  ticker: s.ticker,\n  company: s.company,\n  score: s.score,\n  verdict: s.verdict,\n  price: s.price,\n  one_year_target: s.one_year_target,\n  upside_pct: s.upside_pct\n}));\n\n// Stocks with earnings within 7 days\nconst earningsAlerts = portfolio.filter(s => {\n  return s.earnings_countdown_days !== null &&\n         s.earnings_countdown_days >= 0 &&\n         s.earnings_countdown_days <= 7;\n}).map(s => ({\n  ticker: s.ticker,\n  company: s.company,\n  next_earnings: s.next_earnings,\n  countdown_days: s.earnings_countdown_days,\n  verdict: s.verdict\n}));\n\n// Full portfolio summary sorted by score\nconst summaryTable = sorted.map(s => ({\n  ticker: s.ticker,\n  company: s.company,\n  verdict: s.verdict,\n  score: s.score,\n  price: s.price,\n  one_year_target: s.one_year_target,\n  upside_pct: s.upside_pct,\n  earnings_countdown_days: s.earnings_countdown_days,\n  sector: s.sector\n}));\n\nreturn [{\n  json: {\n    generated_at: results.generated_at,\n    macro: {\n      overall_signal: macro.overall_signal,\n      overall_score: macro.overall_score,\n      recession_probability: macro.recession_probability\n    },\n    counts: counts,\n    top3: top3,\n    earningsAlerts: earningsAlerts,\n    summaryTable: summaryTable,\n    totalStocks: portfolio.length\n  }\n}];"
+        "jsCode": "// Parse the JSON results and extract key data\nconst fileContent = $input.first().json.data;\nconst results = JSON.parse(fileContent);\n\nconst macro = results.macro || {};\nconst portfolio = results.portfolio || [];\n\n// Verdict counts\nconst counts = { Buy: 0, Hold: 0, Pass: 0, Avoid: 0 };\nfor (const stock of portfolio) {\n  if (counts.hasOwnProperty(stock.verdict)) {\n    counts[stock.verdict]++;\n  }\n}\n\n// Top 3 by score\nconst sorted = [...portfolio].sort((a, b) => b.score - a.score);\nconst top3 = sorted.slice(0, 3).map(s => ({\n  ticker: s.ticker,\n  company: s.company,\n  score: s.score,\n  verdict: s.verdict,\n  price: s.price,\n  one_year_target: s.one_year_target,\n  upside_pct: s.upside_pct\n}));\n\n// Stocks with earnings within 7 days\nconst earningsAlerts = portfolio.filter(s => {\n  return s.earnings_countdown_days !== null &&\n         s.earnings_countdown_days >= 0 &&\n         s.earnings_countdown_days <= 7;\n}).map(s => ({\n  ticker: s.ticker,\n  company: s.company,\n  next_earnings: s.next_earnings,\n  countdown_days: s.earnings_countdown_days,\n  verdict: s.verdict\n}));\n\n// Full portfolio summary sorted by score\nconst summaryTable = sorted.map(s => ({\n  ticker: s.ticker,\n  company: s.company,\n  verdict: s.verdict,\n  score: s.score,\n  price: s.price,\n  one_year_target: s.one_year_target,\n  upside_pct: s.upside_pct,\n  earnings_countdown_days: s.earnings_countdown_days,\n  sector: s.sector\n}));\n\n// Pass through raw portfolio for Notion\nreturn [{\n  json: {\n    generated_at: results.generated_at,\n    macro: {\n      overall_signal: macro.overall_signal,\n      overall_score: macro.overall_score,\n      recession_probability: macro.recession_probability\n    },\n    counts: counts,\n    top3: top3,\n    earningsAlerts: earningsAlerts,\n    summaryTable: summaryTable,\n    totalStocks: portfolio.length,\n    rawPortfolio: portfolio\n  }\n}];"
       },
       "id": "parse-json",
       "name": "Parse JSON Results",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [920, 260],
-      "notes": "Parses the raw JSON and extracts: macro signal, recession probability, verdict counts, top 3 stocks, earnings alerts (within 7 days), and the full sorted portfolio summary."
+      "notes": "Parses JSON, extracts verdicts, top picks, earnings alerts. Passes raw portfolio data for Notion."
     },
     {
       "parameters": {
-        "jsCode": "const data = $input.first().json;\nconst d = data.generated_at ? data.generated_at.split('T')[0] : new Date().toISOString().split('T')[0];\n\n// --- Header ---\nlet msg = '';\nmsg += '='.repeat(50) + '\\n';\nmsg += `PORTFOLIO ANALYZER DAILY REPORT - ${d}\\n`;\nmsg += '='.repeat(50) + '\\n\\n';\n\n// --- Macro Environment ---\nconst macro = data.macro;\nmsg += 'MACRO ENVIRONMENT\\n';\nmsg += '-'.repeat(30) + '\\n';\nmsg += `Signal:                ${macro.overall_signal} (${macro.overall_score}/10)\\n`;\nmsg += `Recession Probability: ${macro.recession_probability}\\n\\n`;\n\n// --- Verdict Breakdown ---\nconst c = data.counts;\nmsg += 'VERDICT BREAKDOWN\\n';\nmsg += '-'.repeat(30) + '\\n';\nmsg += `Buy: ${c.Buy}  |  Hold: ${c.Hold}  |  Pass: ${c.Pass}  |  Avoid: ${c.Avoid}\\n`;\nmsg += `Total stocks analyzed: ${data.totalStocks}\\n\\n`;\n\n// --- Top 3 Picks ---\nmsg += 'TOP 3 PICKS\\n';\nmsg += '-'.repeat(50) + '\\n';\nmsg += 'Ticker  Score  Verdict  Price     Target    Upside\\n';\nmsg += '-'.repeat(50) + '\\n';\nfor (const s of data.top3) {\n  const ticker = (s.ticker || '').padEnd(8);\n  const score = String(s.score != null ? s.score.toFixed(1) : 'N/A').padEnd(7);\n  const verdict = (s.verdict || '').padEnd(9);\n  const price = s.price != null ? ('$' + s.price.toFixed(2)).padEnd(10) : 'N/A'.padEnd(10);\n  const target = s.one_year_target != null ? ('$' + s.one_year_target.toFixed(2)).padEnd(10) : 'N/A'.padEnd(10);\n  const upside = s.upside_pct != null ? (s.upside_pct > 0 ? '+' : '') + s.upside_pct.toFixed(1) + '%' : 'N/A';\n  msg += `${ticker}${score}${verdict}${price}${target}${upside}\\n`;\n}\nmsg += '\\n';\n\n// --- Earnings Alerts ---\nif (data.earningsAlerts && data.earningsAlerts.length > 0) {\n  msg += 'EARNINGS ALERTS (within 7 days)\\n';\n  msg += '-'.repeat(40) + '\\n';\n  for (const a of data.earningsAlerts) {\n    const urgency = a.countdown_days <= 2 ? ' *** IMMINENT ***' : '';\n    msg += `${a.ticker} (${a.company}) - Earnings in ${a.countdown_days} day(s) [${a.next_earnings}]${urgency}\\n`;\n  }\n  msg += '\\n';\n} else {\n  msg += 'EARNINGS ALERTS: None within 7 days\\n\\n';\n}\n\n// --- Full Portfolio Summary ---\nmsg += 'FULL PORTFOLIO (sorted by score)\\n';\nmsg += '-'.repeat(60) + '\\n';\nmsg += 'Ticker  Score  Verdict  Price     Target    Upside   Earnings\\n';\nmsg += '-'.repeat(60) + '\\n';\nfor (const s of data.summaryTable) {\n  const ticker = (s.ticker || '').padEnd(8);\n  const score = String(s.score != null ? s.score.toFixed(1) : 'N/A').padEnd(7);\n  const verdict = (s.verdict || '').padEnd(9);\n  const price = s.price != null ? ('$' + s.price.toFixed(2)).padEnd(10) : 'N/A'.padEnd(10);\n  const target = s.one_year_target != null ? ('$' + s.one_year_target.toFixed(2)).padEnd(10) : 'N/A'.padEnd(10);\n  const upside = s.upside_pct != null ? ((s.upside_pct > 0 ? '+' : '') + s.upside_pct.toFixed(1) + '%').padEnd(9) : 'N/A'.padEnd(9);\n  const earn = s.earnings_countdown_days != null ? s.earnings_countdown_days + 'd' : '-';\n  msg += `${ticker}${score}${verdict}${price}${target}${upside}${earn}\\n`;\n}\nmsg += '\\n' + '='.repeat(50) + '\\n';\nmsg += 'Generated by Ultimate Stock Portfolio Analyzer\\n';\n\nreturn [{ json: { message: msg, ...data } }];"
+        "jsCode": "const data = $input.first().json;\nconst d = data.generated_at ? data.generated_at.split('T')[0] : new Date().toISOString().split('T')[0];\n\n// Verdict emoji mapping\nconst vEmoji = { Buy: '\\u2705', Hold: '\\u26A0\\uFE0F', Pass: '\\u23F8\\uFE0F', Avoid: '\\u274C' };\n\n// --- Build HTML email ---\nlet html = '';\nhtml += '<div style=\"font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto;\">';\n\n// Header\nhtml += '<div style=\"background: #1a237e; color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center;\">';\nhtml += '<h1 style=\"margin: 0; font-size: 22px;\">Portfolio Analyzer Daily Report</h1>';\nhtml += `<p style=\"margin: 5px 0 0; opacity: 0.8;\">${d}</p>`;\nhtml += '</div>';\n\n// Macro\nconst macro = data.macro;\nconst macroColor = macro.overall_signal === 'Risk On' ? '#2e7d32' : macro.overall_signal === 'Cautious' ? '#f57f17' : '#c62828';\nhtml += `<div style=\"background: ${macroColor}; color: white; padding: 12px 20px; font-size: 14px;\">`;\nhtml += `<strong>Macro:</strong> ${macro.overall_signal} (${macro.overall_score}/10) &nbsp;|&nbsp; `;\nhtml += `<strong>Recession Risk:</strong> ${macro.recession_probability}`;\nhtml += '</div>';\n\n// Verdict counts bar\nconst c = data.counts;\nhtml += '<div style=\"display: flex; padding: 15px 20px; background: #f5f5f5; gap: 15px; font-size: 14px;\">';\nhtml += `<span style=\"color: #2e7d32;\"><strong>${c.Buy}</strong> Buy</span>`;\nhtml += `<span style=\"color: #f57f17;\"><strong>${c.Hold}</strong> Hold</span>`;\nhtml += `<span style=\"color: #757575;\"><strong>${c.Pass}</strong> Pass</span>`;\nhtml += `<span style=\"color: #c62828;\"><strong>${c.Avoid}</strong> Avoid</span>`;\nhtml += `<span style=\"margin-left: auto; color: #999;\">${data.totalStocks} stocks analyzed</span>`;\nhtml += '</div>';\n\n// Top 3 Picks\nhtml += '<div style=\"padding: 20px;\">';\nhtml += '<h2 style=\"color: #1a237e; font-size: 16px; margin: 0 0 10px;\">Top 3 Picks</h2>';\nhtml += '<table style=\"width: 100%; border-collapse: collapse; font-size: 13px;\">';\nhtml += '<tr style=\"background: #e8eaf6;\"><th style=\"padding: 8px; text-align: left;\">Ticker</th><th>Score</th><th>Verdict</th><th style=\"text-align: right;\">Price</th><th style=\"text-align: right;\">Target</th><th style=\"text-align: right;\">Upside</th></tr>';\nfor (const s of data.top3) {\n  const upsideColor = s.upside_pct > 0 ? '#2e7d32' : '#c62828';\n  const upsideStr = s.upside_pct != null ? (s.upside_pct > 0 ? '+' : '') + s.upside_pct.toFixed(1) + '%' : 'N/A';\n  html += '<tr style=\"border-bottom: 1px solid #eee;\">';\n  html += `<td style=\"padding: 8px;\"><strong>${s.ticker}</strong></td>`;\n  html += `<td style=\"text-align: center;\">${s.score}/10</td>`;\n  html += `<td style=\"text-align: center;\">${vEmoji[s.verdict] || ''} ${s.verdict}</td>`;\n  html += `<td style=\"text-align: right;\">$${s.price ? s.price.toFixed(2) : 'N/A'}</td>`;\n  html += `<td style=\"text-align: right;\">$${s.one_year_target ? s.one_year_target.toFixed(2) : 'N/A'}</td>`;\n  html += `<td style=\"text-align: right; color: ${upsideColor};\">${upsideStr}</td>`;\n  html += '</tr>';\n}\nhtml += '</table></div>';\n\n// Earnings Alerts\nif (data.earningsAlerts && data.earningsAlerts.length > 0) {\n  html += '<div style=\"padding: 10px 20px; background: #fff3e0; border-left: 4px solid #ff9800;\">';\n  html += '<h3 style=\"margin: 0 0 8px; font-size: 14px; color: #e65100;\">\\u23F0 Earnings Alerts (within 7 days)</h3>';\n  for (const a of data.earningsAlerts) {\n    const urgent = a.countdown_days <= 2 ? ' <strong style=\"color: red;\">IMMINENT</strong>' : '';\n    html += `<p style=\"margin: 4px 0; font-size: 13px;\">${a.ticker} (${a.company}) - <strong>${a.countdown_days} day(s)</strong> [${a.next_earnings}]${urgent}</p>`;\n  }\n  html += '</div>';\n}\n\n// Full Portfolio Table\nhtml += '<div style=\"padding: 20px;\">';\nhtml += '<h2 style=\"color: #1a237e; font-size: 16px; margin: 0 0 10px;\">Full Portfolio</h2>';\nhtml += '<table style=\"width: 100%; border-collapse: collapse; font-size: 12px;\">';\nhtml += '<tr style=\"background: #e8eaf6;\"><th style=\"padding: 6px; text-align: left;\">Ticker</th><th>Score</th><th>Verdict</th><th style=\"text-align: right;\">Price</th><th style=\"text-align: right;\">Target</th><th style=\"text-align: right;\">Upside</th><th>Earnings</th></tr>';\nfor (const s of data.summaryTable) {\n  const upsideColor = s.upside_pct > 0 ? '#2e7d32' : '#c62828';\n  const upsideStr = s.upside_pct != null ? (s.upside_pct > 0 ? '+' : '') + s.upside_pct.toFixed(1) + '%' : 'N/A';\n  const earn = s.earnings_countdown_days != null ? s.earnings_countdown_days + 'd' : '-';\n  html += '<tr style=\"border-bottom: 1px solid #eee;\">';\n  html += `<td style=\"padding: 6px;\"><strong>${s.ticker}</strong></td>`;\n  html += `<td style=\"text-align: center;\">${s.score}/10</td>`;\n  html += `<td style=\"text-align: center;\">${vEmoji[s.verdict] || ''} ${s.verdict}</td>`;\n  html += `<td style=\"text-align: right;\">$${s.price ? s.price.toFixed(2) : 'N/A'}</td>`;\n  html += `<td style=\"text-align: right;\">$${s.one_year_target ? s.one_year_target.toFixed(2) : 'N/A'}</td>`;\n  html += `<td style=\"text-align: right; color: ${upsideColor};\">${upsideStr}</td>`;\n  html += `<td style=\"text-align: center;\">${earn}</td>`;\n  html += '</tr>';\n}\nhtml += '</table></div>';\n\n// Footer\nhtml += '<div style=\"padding: 15px 20px; background: #f5f5f5; border-radius: 0 0 8px 8px; font-size: 11px; color: #999; text-align: center;\">';\nhtml += 'Generated by Ultimate Stock Portfolio Analyzer. Not financial advice.';\nhtml += '</div></div>';\n\n// Plain text fallback\nlet plain = `Portfolio Report - ${d}\\n`;\nplain += `Macro: ${macro.overall_signal} (${macro.overall_score}/10) | Recession Risk: ${macro.recession_probability}\\n\\n`;\nplain += `Verdicts: ${c.Buy} Buy | ${c.Hold} Hold | ${c.Pass} Pass | ${c.Avoid} Avoid\\n\\n`;\nplain += 'Top Picks:\\n';\nfor (const s of data.top3) {\n  plain += `  ${s.ticker} - ${s.verdict} (${s.score}/10) - $${s.price ? s.price.toFixed(2) : 'N/A'} -> $${s.one_year_target ? s.one_year_target.toFixed(2) : 'N/A'}\\n`;\n}\n\nreturn [{ json: { html: html, plain: plain, subject: `Portfolio Report ${d} | ${c.Buy} Buy, ${c.Hold} Hold, ${c.Pass} Pass, ${c.Avoid} Avoid`, ...data } }];"
       },
-      "id": "format-message",
-      "name": "Format Summary Message",
+      "id": "format-email",
+      "name": "Format Gmail Email",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1160, 260],
-      "notes": "Builds a clean, human-readable summary message with header, macro status, verdict counts, top picks table, earnings alerts, and full portfolio sorted by score."
+      "position": [1160, 200],
+      "notes": "Builds a styled HTML email with header, macro bar, top picks table, earnings alerts, and full portfolio grid. Also generates a plain-text fallback."
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.SLACK_WEBHOOK_URL || 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL' }}",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"text\": \"{{ $json.message.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"').replace(/\\n/g, '\\\\n') }}\"\n}",
+        "sendTo": "={{ $env.PORTFOLIO_EMAIL || 'your-email@gmail.com' }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}",
         "options": {}
       },
-      "id": "slack-webhook",
-      "name": "Send to Slack",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1400, 260],
-      "notes": "SETUP REQUIRED: Set the environment variable SLACK_WEBHOOK_URL in your n8n instance, or replace the URL directly. To get a webhook URL: 1) Go to api.slack.com/apps, 2) Create or select an app, 3) Enable Incoming Webhooks, 4) Add a webhook to your target channel, 5) Copy the URL."
+      "id": "send-gmail",
+      "name": "Send Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1400, 200],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "GMAIL_CREDENTIAL_ID",
+          "name": "Gmail Account"
+        }
+      },
+      "notes": "SETUP: 1) In n8n, go to Credentials > Add > Gmail OAuth2. 2) Follow the Google OAuth setup. 3) Update the credential ID here or re-select in the UI. 4) Set PORTFOLIO_EMAIL env var or edit the 'sendTo' field."
     },
     {
       "parameters": {
-        "jsCode": "// Error handler: captures failure from the analyzer script\nconst errorItem = $input.first();\nconst errorMsg = errorItem.json.stderr || errorItem.json.error || 'Unknown error';\nconst exitCode = errorItem.json.exitCode || 'N/A';\nconst now = new Date().toISOString().split('T')[0];\n\nconst message = [\n  '='.repeat(50),\n  `PORTFOLIO ANALYZER ERROR - ${now}`,\n  '='.repeat(50),\n  '',\n  'The daily portfolio analysis FAILED.',\n  '',\n  `Exit Code: ${exitCode}`,\n  `Error Output:`,\n  errorMsg,\n  '',\n  'Please check:',\n  '  1. Python environment and dependencies (yfinance, rich)',\n  '  2. Network connectivity to Yahoo Finance',\n  '  3. Disk space for /tmp/portfolio_results.json',\n  '  4. Script path: /home/user/qlib',\n  '',\n  '='.repeat(50)\n].join('\\n');\n\nreturn [{ json: { message: message, isError: true } }];"
+        "jsCode": "// Push each stock to Notion database via API\nconst data = $input.first().json;\nconst portfolio = data.rawPortfolio || [];\nconst apiKey = $env.NOTION_API_KEY;\nconst dbId = $env.NOTION_DATABASE_ID;\n\nif (!apiKey || !dbId) {\n  return [{ json: { status: 'skipped', reason: 'NOTION_API_KEY or NOTION_DATABASE_ID not set' } }];\n}\n\nconst headers = {\n  'Authorization': `Bearer ${apiKey}`,\n  'Notion-Version': '2022-06-28',\n  'Content-Type': 'application/json'\n};\n\nconst results = [];\n\nfor (const stock of portfolio) {\n  // Check if stock already exists\n  const queryResp = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {\n    method: 'POST',\n    headers: headers,\n    body: JSON.stringify({\n      filter: { property: 'Ticker', title: { equals: stock.ticker } }\n    })\n  });\n  const queryData = await queryResp.json();\n  const existingPage = queryData.results && queryData.results.length > 0 ? queryData.results[0].id : null;\n\n  // Build properties\n  const props = {\n    'Ticker': { title: [{ text: { content: stock.ticker } }] },\n    'Company': { rich_text: [{ text: { content: stock.company || '' } }] },\n    'Verdict': { select: { name: stock.verdict } },\n    'Score': { number: stock.score },\n    'Price': { number: stock.price ? Math.round(stock.price * 100) / 100 : null },\n    '1Y Target': { number: stock.one_year_target ? Math.round(stock.one_year_target * 100) / 100 : null },\n    'Sector': stock.sector ? { select: { name: stock.sector } } : { select: null },\n    'Last Updated': { date: { start: new Date().toISOString().split('T')[0] } }\n  };\n\n  if (stock.upside_pct != null) {\n    props['Upside %'] = { number: Math.round(stock.upside_pct / 100 * 10000) / 10000 };\n  }\n  if (stock.next_earnings) {\n    props['Earnings Date'] = { date: { start: stock.next_earnings } };\n  }\n  if (stock.earnings_countdown_days != null) {\n    props['Earnings Countdown'] = { number: stock.earnings_countdown_days };\n  }\n  if (stock.component_scores) {\n    props['Valuation Score'] = { number: stock.component_scores.valuation };\n    props['Quality Score'] = { number: stock.component_scores.quality };\n    props['Momentum Score'] = { number: stock.component_scores.momentum };\n    props['Agent Consensus'] = { number: stock.component_scores.agent_consensus };\n  }\n  if (stock.bull_case && stock.bull_case.length > 0) {\n    props['Bull Case'] = { rich_text: [{ text: { content: stock.bull_case.slice(0, 3).join(' | ').substring(0, 2000) } }] };\n  }\n  if (stock.bear_case && stock.bear_case.length > 0) {\n    props['Bear Case'] = { rich_text: [{ text: { content: stock.bear_case.slice(0, 3).join(' | ').substring(0, 2000) } }] };\n  }\n\n  // Find top bull/bear agents\n  if (stock.agent_verdicts && stock.agent_verdicts.length > 0) {\n    const bull = stock.agent_verdicts.reduce((a, b) => a.score > b.score ? a : b);\n    const bear = stock.agent_verdicts.reduce((a, b) => a.score < b.score ? a : b);\n    props['Top Bull Agent'] = { rich_text: [{ text: { content: `${bull.agent} (${bull.score}/10)` } }] };\n    props['Top Bear Agent'] = { rich_text: [{ text: { content: `${bear.agent} (${bear.score}/10)` } }] };\n  }\n\n  if (existingPage) {\n    // Update existing row\n    await fetch(`https://api.notion.com/v1/pages/${existingPage}`, {\n      method: 'PATCH',\n      headers: headers,\n      body: JSON.stringify({ properties: props })\n    });\n    results.push({ ticker: stock.ticker, action: 'updated' });\n  } else {\n    // Create new row\n    await fetch('https://api.notion.com/v1/pages', {\n      method: 'POST',\n      headers: headers,\n      body: JSON.stringify({ parent: { database_id: dbId }, properties: props })\n    });\n    results.push({ ticker: stock.ticker, action: 'created' });\n  }\n}\n\nreturn [{ json: { status: 'success', stocks_updated: results.length, details: results } }];"
+      },
+      "id": "notion-update",
+      "name": "Update Notion Database",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 340],
+      "notes": "SETUP: Set NOTION_API_KEY and NOTION_DATABASE_ID as environment variables. Each stock is upserted (created if new, updated if existing) based on the Ticker column."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Error handler: captures failure from the analyzer script\nconst errorItem = $input.first();\nconst errorMsg = errorItem.json.stderr || errorItem.json.error || 'Unknown error';\nconst exitCode = errorItem.json.exitCode || 'N/A';\nconst now = new Date().toISOString().split('T')[0];\n\nconst html = `<div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;\">`\n  + `<div style=\"background: #c62828; color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center;\">`\n  + `<h2 style=\"margin: 0;\">Portfolio Analyzer FAILED</h2>`\n  + `<p style=\"margin: 5px 0 0; opacity: 0.8;\">${now}</p></div>`\n  + `<div style=\"padding: 20px; background: #fff;\">`\n  + `<p><strong>Exit Code:</strong> ${exitCode}</p>`\n  + `<pre style=\"background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-size: 12px;\">${errorMsg}</pre>`\n  + `<h3>Checklist:</h3><ul>`\n  + `<li>Python environment and dependencies (yfinance, rich)</li>`\n  + `<li>Network connectivity to Yahoo Finance</li>`\n  + `<li>Disk space for /tmp/portfolio_results.json</li>`\n  + `<li>Script path: /home/user/qlib</li>`\n  + `</ul></div></div>`;\n\nreturn [{ json: { html: html, subject: `[ERROR] Portfolio Analyzer Failed - ${now}` } }];"
       },
       "id": "error-handler",
-      "name": "Format Error Message",
+      "name": "Format Error Email",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [680, 440],
-      "notes": "Formats a clear error notification when the analyzer script fails, including the exit code and stderr output."
+      "position": [680, 460],
+      "notes": "Formats a styled HTML error email with diagnostic info."
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.SLACK_WEBHOOK_URL || 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL' }}",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"text\": \"{{ $json.message.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"').replace(/\\n/g, '\\\\n') }}\"\n}",
+        "sendTo": "={{ $env.PORTFOLIO_EMAIL || 'your-email@gmail.com' }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}",
         "options": {}
       },
-      "id": "slack-error-webhook",
-      "name": "Send Error to Slack",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [920, 440],
-      "notes": "Sends the error notification to Slack using the same webhook."
+      "id": "send-error-gmail",
+      "name": "Send Error Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [920, 460],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "GMAIL_CREDENTIAL_ID",
+          "name": "Gmail Account"
+        }
+      },
+      "notes": "Sends error notification to the same Gmail address."
     }
   ],
   "connections": {
@@ -133,7 +154,7 @@
         ],
         [
           {
-            "node": "Format Error Message",
+            "node": "Format Error Email",
             "type": "main",
             "index": 0
           }
@@ -155,29 +176,34 @@
       "main": [
         [
           {
-            "node": "Format Summary Message",
+            "node": "Format Gmail Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Notion Database",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Format Summary Message": {
+    "Format Gmail Email": {
       "main": [
         [
           {
-            "node": "Send to Slack",
+            "node": "Send Gmail",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Format Error Message": {
+    "Format Error Email": {
       "main": [
         [
           {
-            "node": "Send Error to Slack",
+            "node": "Send Error Gmail",
             "type": "main",
             "index": 0
           }
@@ -200,10 +226,18 @@
     {
       "name": "automation",
       "id": "2"
+    },
+    {
+      "name": "gmail",
+      "id": "3"
+    },
+    {
+      "name": "notion",
+      "id": "4"
     }
   ],
   "triggerCount": 1,
-  "versionId": "1",
+  "versionId": "2",
   "meta": {
     "instanceId": "placeholder"
   }
