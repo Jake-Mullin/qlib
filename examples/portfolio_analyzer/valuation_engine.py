@@ -37,19 +37,35 @@ class StockValuation:
     composite_upside: Optional[float] = None
 
     def compute_composite(self):
-        """Weighted average of valid valuations."""
+        """Confidence-weighted average with outlier rejection.
+
+        Methods whose fair value is >60% below or >200% above the current
+        price are likely inappropriate for the stock type (e.g. Graham
+        Number on a high-growth semi).  These are downweighted heavily
+        so they don't dominate the composite.
+        """
         weights = {"High": 3.0, "Medium": 2.0, "Low": 1.0}
-        total_w = 0.0
-        total_v = 0.0
+        entries = []
         for v in self.valuations:
             if v.fair_value is not None and v.fair_value > 0:
                 w = weights.get(v.confidence, 1.0)
-                total_v += v.fair_value * w
-                total_w += w
-        if total_w > 0:
-            self.composite_fair_value = total_v / total_w
-            if self.current_price > 0:
-                self.composite_upside = ((self.composite_fair_value - self.current_price) / self.current_price) * 100
+                # Outlier penalty: if a method's fair value is wildly
+                # different from price, it's probably the wrong framework
+                if self.current_price > 0:
+                    ratio = v.fair_value / self.current_price
+                    if ratio < 0.40 or ratio > 3.0:
+                        w *= 0.15  # Severely downweight outlier methods
+                    elif ratio < 0.60 or ratio > 2.0:
+                        w *= 0.40  # Moderately downweight
+                entries.append((v.fair_value, w))
+
+        if entries:
+            total_v = sum(fv * w for fv, w in entries)
+            total_w = sum(w for _, w in entries)
+            if total_w > 0:
+                self.composite_fair_value = round(total_v / total_w, 2)
+                if self.current_price > 0:
+                    self.composite_upside = ((self.composite_fair_value - self.current_price) / self.current_price) * 100
 
 
 def dcf_valuation(data: StockData, discount_rate: float = 0.10, growth_years: int = 5, terminal_growth: float = 0.03) -> ValuationResult:
@@ -141,12 +157,20 @@ def pb_valuation(data: StockData) -> ValuationResult:
         return ValuationResult("P/B Value", None, None, "Low", "Needs Book Value and ROE")
 
     # Justified P/B = ROE / (cost of equity - growth)
-    # Simplified: if ROE > 15%, stock deserves P/B of ~3x; if ROE ~10%, ~1.5x; etc.
+    # Higher ROE and higher growth deserve higher P/B multiples
     roe_pct = data.roe * 100 if data.roe < 1 else data.roe
-    if roe_pct > 25:
-        fair_pb = 4.0
+    growth_boost = 0.0
+    if data.revenue_growth and data.revenue_growth > 0.20:
+        growth_boost = 2.0  # High-growth companies deserve P/B premium
+    elif data.revenue_growth and data.revenue_growth > 0.10:
+        growth_boost = 1.0
+
+    if roe_pct > 30:
+        fair_pb = 6.0 + growth_boost
+    elif roe_pct > 25:
+        fair_pb = 4.0 + growth_boost
     elif roe_pct > 20:
-        fair_pb = 3.0
+        fair_pb = 3.0 + growth_boost
     elif roe_pct > 15:
         fair_pb = 2.5
     elif roe_pct > 10:
