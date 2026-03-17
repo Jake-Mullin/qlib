@@ -1,0 +1,47 @@
+{
+  "generated_at": "2026-03-17T03:51:40.215961",
+  "macro": {
+    "overall_signal": "Cautious",
+    "overall_score": 5.0,
+    "recession_probability": "Moderate",
+    "indicators": [
+      {
+        "name": "Buffett Indicator",
+        "value": null,
+        "signal": "Yellow",
+        "description": "Could not fetch market data"
+      },
+      {
+        "name": "Yield Curve (10Y-2Y)",
+        "value": null,
+        "signal": "Yellow",
+        "description": "Could not fetch Treasury yields"
+      },
+      {
+        "name": "VIX Fear Index",
+        "value": null,
+        "signal": "Yellow",
+        "description": "Could not fetch VIX"
+      },
+      {
+        "name": "S&P 500 Trend",
+        "value": null,
+        "signal": "Yellow",
+        "description": "Error computing trend"
+      },
+      {
+        "name": "Gold (Safe Haven)",
+        "value": null,
+        "signal": "Yellow",
+        "description": "Could not fetch gold price"
+      },
+      {
+        "name": "US Dollar Index",
+        "value": null,
+        "signal": "Yellow",
+        "description": "Could not fetch DXY"
+      }
+    ]
+  },
+  "portfolio": []
+}

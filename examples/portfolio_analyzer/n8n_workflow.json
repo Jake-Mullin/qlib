@@ -1,0 +1,210 @@
+{
+  "name": "Ultimate Stock Portfolio Analyzer - Daily Report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Daily 6AM EST (Weekdays)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300],
+      "notes": "Runs Monday-Friday at 6:00 AM. Make sure your n8n instance timezone is set to America/New_York (EST) in Settings > General. The cron expression '0 6 * * 1-5' means: minute 0, hour 6, any day of month, any month, Monday(1) through Friday(5)."
+    },
+    {
+      "parameters": {
+        "command": "cd /home/user/qlib && python -m examples.portfolio_analyzer --export /tmp/portfolio_results.json --no-details",
+        "timeout": 300
+      },
+      "id": "run-analyzer",
+      "name": "Run Portfolio Analyzer",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [440, 300],
+      "notes": "Executes the portfolio analyzer script. Timeout set to 300s (5 min) to allow for Yahoo Finance API calls. The --no-details flag skips verbose per-stock output. Results are exported as JSON to /tmp/portfolio_results.json.",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "filePath": "/tmp/portfolio_results.json",
+        "options": {}
+      },
+      "id": "read-results",
+      "name": "Read Results JSON",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [680, 260],
+      "notes": "Reads the exported JSON results file produced by the analyzer."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the JSON results and extract key data\nconst fileContent = $input.first().json.data;\nconst results = JSON.parse(fileContent);\n\nconst macro = results.macro || {};\nconst portfolio = results.portfolio || [];\n\n// Verdict counts\nconst counts = { Buy: 0, Hold: 0, Pass: 0, Avoid: 0 };\nfor (const stock of portfolio) {\n  if (counts.hasOwnProperty(stock.verdict)) {\n    counts[stock.verdict]++;\n  }\n}\n\n// Top 3 by score\nconst sorted = [...portfolio].sort((a, b) => b.score - a.score);\nconst top3 = sorted.slice(0, 3).map(s => ({\n  ticker: s.ticker,\n  company: s.company,\n  score: s.score,\n  verdict: s.verdict,\n  price: s.price,\n  one_year_target: s.one_year_target,\n  upside_pct: s.upside_pct\n}));\n\n// Stocks with earnings within 7 days\nconst earningsAlerts = portfolio.filter(s => {\n  return s.earnings_countdown_days !== null &&\n         s.earnings_countdown_days >= 0 &&\n         s.earnings_countdown_days <= 7;\n}).map(s => ({\n  ticker: s.ticker,\n  company: s.company,\n  next_earnings: s.next_earnings,\n  countdown_days: s.earnings_countdown_days,\n  verdict: s.verdict\n}));\n\n// Full portfolio summary sorted by score\nconst summaryTable = sorted.map(s => ({\n  ticker: s.ticker,\n  company: s.company,\n  verdict: s.verdict,\n  score: s.score,\n  price: s.price,\n  one_year_target: s.one_year_target,\n  upside_pct: s.upside_pct,\n  earnings_countdown_days: s.earnings_countdown_days,\n  sector: s.sector\n}));\n\nreturn [{\n  json: {\n    generated_at: results.generated_at,\n    macro: {\n      overall_signal: macro.overall_signal,\n      overall_score: macro.overall_score,\n      recession_probability: macro.recession_probability\n    },\n    counts: counts,\n    top3: top3,\n    earningsAlerts: earningsAlerts,\n    summaryTable: summaryTable,\n    totalStocks: portfolio.length\n  }\n}];"
+      },
+      "id": "parse-json",
+      "name": "Parse JSON Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 260],
+      "notes": "Parses the raw JSON and extracts: macro signal, recession probability, verdict counts, top 3 stocks, earnings alerts (within 7 days), and the full sorted portfolio summary."
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst d = data.generated_at ? data.generated_at.split('T')[0] : new Date().toISOString().split('T')[0];\n\n// --- Header ---\nlet msg = '';\nmsg += '='.repeat(50) + '\\n';\nmsg += `PORTFOLIO ANALYZER DAILY REPORT - ${d}\\n`;\nmsg += '='.repeat(50) + '\\n\\n';\n\n// --- Macro Environment ---\nconst macro = data.macro;\nmsg += 'MACRO ENVIRONMENT\\n';\nmsg += '-'.repeat(30) + '\\n';\nmsg += `Signal:                ${macro.overall_signal} (${macro.overall_score}/10)\\n`;\nmsg += `Recession Probability: ${macro.recession_probability}\\n\\n`;\n\n// --- Verdict Breakdown ---\nconst c = data.counts;\nmsg += 'VERDICT BREAKDOWN\\n';\nmsg += '-'.repeat(30) + '\\n';\nmsg += `Buy: ${c.Buy}  |  Hold: ${c.Hold}  |  Pass: ${c.Pass}  |  Avoid: ${c.Avoid}\\n`;\nmsg += `Total stocks analyzed: ${data.totalStocks}\\n\\n`;\n\n// --- Top 3 Picks ---\nmsg += 'TOP 3 PICKS\\n';\nmsg += '-'.repeat(50) + '\\n';\nmsg += 'Ticker  Score  Verdict  Price     Target    Upside\\n';\nmsg += '-'.repeat(50) + '\\n';\nfor (const s of data.top3) {\n  const ticker = (s.ticker || '').padEnd(8);\n  const score = String(s.score != null ? s.score.toFixed(1) : 'N/A').padEnd(7);\n  const verdict = (s.verdict || '').padEnd(9);\n  const price = s.price != null ? ('$' + s.price.toFixed(2)).padEnd(10) : 'N/A'.padEnd(10);\n  const target = s.one_year_target != null ? ('$' + s.one_year_target.toFixed(2)).padEnd(10) : 'N/A'.padEnd(10);\n  const upside = s.upside_pct != null ? (s.upside_pct > 0 ? '+' : '') + s.upside_pct.toFixed(1) + '%' : 'N/A';\n  msg += `${ticker}${score}${verdict}${price}${target}${upside}\\n`;\n}\nmsg += '\\n';\n\n// --- Earnings Alerts ---\nif (data.earningsAlerts && data.earningsAlerts.length > 0) {\n  msg += 'EARNINGS ALERTS (within 7 days)\\n';\n  msg += '-'.repeat(40) + '\\n';\n  for (const a of data.earningsAlerts) {\n    const urgency = a.countdown_days <= 2 ? ' *** IMMINENT ***' : '';\n    msg += `${a.ticker} (${a.company}) - Earnings in ${a.countdown_days} day(s) [${a.next_earnings}]${urgency}\\n`;\n  }\n  msg += '\\n';\n} else {\n  msg += 'EARNINGS ALERTS: None within 7 days\\n\\n';\n}\n\n// --- Full Portfolio Summary ---\nmsg += 'FULL PORTFOLIO (sorted by score)\\n';\nmsg += '-'.repeat(60) + '\\n';\nmsg += 'Ticker  Score  Verdict  Price     Target    Upside   Earnings\\n';\nmsg += '-'.repeat(60) + '\\n';\nfor (const s of data.summaryTable) {\n  const ticker = (s.ticker || '').padEnd(8);\n  const score = String(s.score != null ? s.score.toFixed(1) : 'N/A').padEnd(7);\n  const verdict = (s.verdict || '').padEnd(9);\n  const price = s.price != null ? ('$' + s.price.toFixed(2)).padEnd(10) : 'N/A'.padEnd(10);\n  const target = s.one_year_target != null ? ('$' + s.one_year_target.toFixed(2)).padEnd(10) : 'N/A'.padEnd(10);\n  const upside = s.upside_pct != null ? ((s.upside_pct > 0 ? '+' : '') + s.upside_pct.toFixed(1) + '%').padEnd(9) : 'N/A'.padEnd(9);\n  const earn = s.earnings_countdown_days != null ? s.earnings_countdown_days + 'd' : '-';\n  msg += `${ticker}${score}${verdict}${price}${target}${upside}${earn}\\n`;\n}\nmsg += '\\n' + '='.repeat(50) + '\\n';\nmsg += 'Generated by Ultimate Stock Portfolio Analyzer\\n';\n\nreturn [{ json: { message: msg, ...data } }];"
+      },
+      "id": "format-message",
+      "name": "Format Summary Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 260],
+      "notes": "Builds a clean, human-readable summary message with header, macro status, verdict counts, top picks table, earnings alerts, and full portfolio sorted by score."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL || 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"{{ $json.message.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"').replace(/\\n/g, '\\\\n') }}\"\n}",
+        "options": {}
+      },
+      "id": "slack-webhook",
+      "name": "Send to Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 260],
+      "notes": "SETUP REQUIRED: Set the environment variable SLACK_WEBHOOK_URL in your n8n instance, or replace the URL directly. To get a webhook URL: 1) Go to api.slack.com/apps, 2) Create or select an app, 3) Enable Incoming Webhooks, 4) Add a webhook to your target channel, 5) Copy the URL."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Error handler: captures failure from the analyzer script\nconst errorItem = $input.first();\nconst errorMsg = errorItem.json.stderr || errorItem.json.error || 'Unknown error';\nconst exitCode = errorItem.json.exitCode || 'N/A';\nconst now = new Date().toISOString().split('T')[0];\n\nconst message = [\n  '='.repeat(50),\n  `PORTFOLIO ANALYZER ERROR - ${now}`,\n  '='.repeat(50),\n  '',\n  'The daily portfolio analysis FAILED.',\n  '',\n  `Exit Code: ${exitCode}`,\n  `Error Output:`,\n  errorMsg,\n  '',\n  'Please check:',\n  '  1. Python environment and dependencies (yfinance, rich)',\n  '  2. Network connectivity to Yahoo Finance',\n  '  3. Disk space for /tmp/portfolio_results.json',\n  '  4. Script path: /home/user/qlib',\n  '',\n  '='.repeat(50)\n].join('\\n');\n\nreturn [{ json: { message: message, isError: true } }];"
+      },
+      "id": "error-handler",
+      "name": "Format Error Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 440],
+      "notes": "Formats a clear error notification when the analyzer script fails, including the exit code and stderr output."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL || 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"{{ $json.message.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"').replace(/\\n/g, '\\\\n') }}\"\n}",
+        "options": {}
+      },
+      "id": "slack-error-webhook",
+      "name": "Send Error to Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 440],
+      "notes": "Sends the error notification to Slack using the same webhook."
+    }
+  ],
+  "connections": {
+    "Daily 6AM EST (Weekdays)": {
+      "main": [
+        [
+          {
+            "node": "Run Portfolio Analyzer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Portfolio Analyzer": {
+      "main": [
+        [
+          {
+            "node": "Read Results JSON",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Error Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Results JSON": {
+      "main": [
+        [
+          {
+            "node": "Parse JSON Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse JSON Results": {
+      "main": [
+        [
+          {
+            "node": "Format Summary Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Summary Message": {
+      "main": [
+        [
+          {
+            "node": "Send to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error Message": {
+      "main": [
+        [
+          {
+            "node": "Send Error to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York",
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "portfolio",
+      "id": "1"
+    },
+    {
+      "name": "automation",
+      "id": "2"
+    }
+  ],
+  "triggerCount": 1,
+  "versionId": "1",
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}
