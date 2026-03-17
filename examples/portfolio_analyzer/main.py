@@ -50,7 +50,7 @@ from .historical_tracker import save_snapshot, init_db
 console = Console()
 
 PRESETS = {
-    "tech": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSM", "AVGO"],
+    "tech": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSM", "AVGO", "MU"],
     "diversified": ["AAPL", "JPM", "JNJ", "XOM", "PG", "HD", "LLY", "V"],
     "dividend": ["KO", "PEP", "JNJ", "PG", "MMM", "ABT", "T", "XOM"],
     "growth": ["NVDA", "TSLA", "AMD", "SHOP", "SQ", "CRWD", "SNOW", "DDOG"],
