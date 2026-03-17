@@ -4,8 +4,8 @@ Micron Technology (MU) Stock Prediction & Analysis using Qlib
 
 This script demonstrates an end-to-end workflow for:
 1. Downloading US stock market data (includes MU)
-2. Training a LightGBM model with Alpha158 features on semiconductor & tech stocks
-3. Generating predictions for Micron (MU)
+2. Training LightGBM models with Alpha158 features on semiconductor & tech stocks
+3. Predicting Micron's 30-day, 60-day, and 90-day returns
 4. Displaying performance metrics and analysis
 
 Usage:
@@ -27,6 +27,13 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 US_DATA_DIR = Path("~/.qlib/qlib_data/us_data").expanduser()
 MICRON_TICKER = "MU"
+
+# Prediction horizons in trading days
+HORIZONS = {
+    "30-day": 30,
+    "60-day": 60,
+    "90-day": 90,
+}
 
 # Semiconductor & tech stocks to train on alongside Micron.
 # Using a focused universe keeps memory usage manageable while providing
@@ -137,21 +144,37 @@ def check_micron_data(available_stocks):
     return mu_found
 
 
-def train_model(available_stocks):
-    """Train a LightGBM model on semiconductor/tech stocks with Alpha158 features."""
+def make_label_config(horizon_days):
+    """
+    Create a label config for N-day forward return.
+
+    Ref($close, -N) looks N days into the future in qlib's convention.
+    Label = Ref($close, -(horizon+1)) / Ref($close, -1) - 1
+    This gives the return from tomorrow's close to (horizon+1) days from now.
+    """
+    return (
+        [f"Ref($close, -{horizon_days + 1})/Ref($close, -1) - 1"],
+        ["LABEL0"],
+    )
+
+
+def train_model_for_horizon(horizon_name, horizon_days, available_stocks):
+    """Train a LightGBM model for a specific prediction horizon."""
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
     from qlib.utils import flatten_dict
 
-    print("[*] Configuring model and dataset...")
+    label_config = make_label_config(horizon_days)
 
-    # The downloaded dataset covers up to ~2020-11-10
+    # The downloaded dataset covers up to ~2020-11-10.
+    # End training earlier to leave room for the forward-looking label.
     data_handler_config = {
         "start_time": "2005-01-01",
-        "end_time": "2020-11-01",
+        "end_time": "2020-06-01",
         "fit_start_time": "2005-01-01",
         "fit_end_time": "2018-12-31",
         "instruments": available_stocks,
+        "label": label_config,
     }
 
     task = {
@@ -181,106 +204,168 @@ def train_model(available_stocks):
                 },
                 "segments": {
                     "train": ("2005-01-01", "2018-12-31"),
-                    "valid": ("2019-01-01", "2019-12-31"),
-                    "test": ("2020-01-01", "2020-11-01"),
+                    "valid": ("2019-01-01", "2019-06-30"),
+                    "test": ("2019-07-01", "2020-06-01"),
                 },
             },
         },
     }
 
-    print("[*] Initializing model and dataset...")
     model = init_instance_by_config(task["model"])
     dataset = init_instance_by_config(task["dataset"])
 
-    print(f"[*] Training LightGBM model on {len(available_stocks)} stocks...")
-    with R.start(experiment_name="micron_stock_prediction"):
+    exp_name = f"micron_{horizon_name}_prediction"
+    with R.start(experiment_name=exp_name):
         R.log_params(**flatten_dict(task))
         model.fit(dataset)
         R.save_objects(trained_model=model)
         rid = R.get_recorder().id
 
-    print(f"[OK] Model trained successfully. Recorder ID: {rid}")
+    print(f"  [{horizon_name}] Model trained. Recorder: {rid}")
     return model, dataset, rid
 
 
-def analyze_micron_predictions(model, dataset, mu_found):
-    """Generate and analyze predictions specifically for Micron."""
+def analyze_horizon(horizon_name, horizon_days, model, dataset, mu_found):
+    """Generate predictions and extract Micron results for one horizon."""
     from qlib.workflow import R
     from qlib.workflow.record_temp import SignalRecord
 
-    print("\n[*] Generating predictions...")
-    with R.start(experiment_name="micron_analysis"):
+    exp_name = f"micron_{horizon_name}_analysis"
+    with R.start(experiment_name=exp_name):
         recorder = R.get_recorder()
         sr = SignalRecord(model, dataset, recorder)
         sr.generate()
         pred_df = recorder.load_object("pred.pkl")
 
-    num_instruments = pred_df.index.get_level_values("instrument").nunique()
-    print(f"[OK] Predictions generated for {num_instruments} instruments.")
+    result = {"horizon": horizon_name, "days": horizon_days, "pred_df": pred_df}
 
-    # Extract Micron predictions
     if mu_found and MICRON_TICKER in pred_df.index.get_level_values("instrument"):
         mu_preds = pred_df.xs(MICRON_TICKER, level="instrument")
+        result["mu_preds"] = mu_preds
 
-        print(f"\n{'='*60}")
-        print(f"  Micron ({MICRON_TICKER}) Prediction Analysis (Test Period)")
-        print(f"{'='*60}")
-        print(f"  Prediction period: {mu_preds.index.min().date()} to {mu_preds.index.max().date()}")
-        print(f"  Number of predictions: {len(mu_preds)}")
-        print(f"\n  Prediction Statistics (score = predicted return):")
-        print(f"    Mean:   {mu_preds['score'].mean():.6f}")
-        print(f"    Std:    {mu_preds['score'].std():.6f}")
-        print(f"    Min:    {mu_preds['score'].min():.6f}")
-        print(f"    Max:    {mu_preds['score'].max():.6f}")
-
-        # Show recent predictions
-        print(f"\n  Most Recent Predictions:")
-        print(f"  {'Date':<14} {'Predicted Score':>16} {'Signal':>10}")
-        print(f"  {'-'*42}")
-        recent = mu_preds.tail(10)
-        for date, row in recent.iterrows():
-            signal = "BUY" if row["score"] > 0 else "SELL"
-            print(f"  {str(date.date()):<14} {row['score']:>16.6f} {signal:>10}")
-
-        # Rank MU among all stocks on latest date
-        print(f"\n  Micron Ranking (latest date):")
+        # Rank on latest date
         latest_date = pred_df.index.get_level_values("datetime").max()
         latest_preds = pred_df.xs(latest_date, level="datetime")
         if MICRON_TICKER in latest_preds.index:
             mu_score = latest_preds.loc[MICRON_TICKER, "score"]
-            mu_rank = (latest_preds["score"] >= mu_score).sum()
+            rank = (latest_preds["score"] >= mu_score).sum()
             total = len(latest_preds)
-            percentile = (1 - mu_rank / total) * 100
-            print(f"    Rank: {mu_rank}/{total} (top {percentile:.1f}%)")
-        print(f"{'='*60}")
-    else:
-        print(f"\n  Note: {MICRON_TICKER} not found in predictions.")
+            result["rank"] = rank
+            result["total"] = total
+            result["mu_latest_score"] = mu_score
+            result["latest_date"] = latest_date
+            result["latest_preds"] = latest_preds
 
-    # Overall model quality metrics
+    # Model quality
     label_df = dataset.prepare("test", col_set="label")
     label_df.columns = ["label"]
     pred_label = pd.concat([label_df, pred_df], axis=1, sort=True).reindex(label_df.index).dropna()
-
     if len(pred_label) > 0:
         ic = pred_label.groupby("datetime").apply(
             lambda x: x["score"].corr(x["label"])
         )
-        print(f"\n  Overall Model Quality (Test Set: 2020):")
-        print(f"    Information Coefficient (IC):")
-        print(f"      Mean IC:  {ic.mean():.4f}")
-        print(f"      IC Std:   {ic.std():.4f}")
-        if ic.std() > 0:
-            print(f"      ICIR:     {ic.mean() / ic.std():.4f}")
-        print(f"      IC > 0:   {(ic > 0).mean()*100:.1f}%")
+        result["mean_ic"] = ic.mean()
+        result["ic_std"] = ic.std()
+        result["ic_positive_pct"] = (ic > 0).mean() * 100
 
-    return pred_df
+    return result
+
+
+def print_combined_results(results):
+    """Print a unified view comparing all three horizons."""
+    print(f"\n{'='*70}")
+    print(f"  Micron ({MICRON_TICKER}) Multi-Horizon Prediction Summary")
+    print(f"{'='*70}")
+
+    # Header
+    print(f"\n  {'Metric':<30}", end="")
+    for r in results:
+        print(f" {r['horizon']:>12}", end="")
+    print()
+    print(f"  {'-'*66}")
+
+    # Latest predicted score
+    print(f"  {'Predicted Score':<30}", end="")
+    for r in results:
+        if "mu_latest_score" in r:
+            print(f" {r['mu_latest_score']:>12.6f}", end="")
+        else:
+            print(f" {'N/A':>12}", end="")
+    print()
+
+    # Signal
+    print(f"  {'Signal':<30}", end="")
+    for r in results:
+        if "mu_latest_score" in r:
+            signal = "BUY" if r["mu_latest_score"] > 0 else "SELL"
+            print(f" {signal:>12}", end="")
+        else:
+            print(f" {'N/A':>12}", end="")
+    print()
+
+    # Rank
+    print(f"  {'Rank (out of peers)':<30}", end="")
+    for r in results:
+        if "rank" in r:
+            print(f" {r['rank']}/{r['total']:>9}", end="")
+        else:
+            print(f" {'N/A':>12}", end="")
+    print()
+
+    # Model quality
+    print(f"\n  {'-'*66}")
+    print(f"  {'Model Quality (IC)':<30}", end="")
+    for r in results:
+        if "mean_ic" in r:
+            print(f" {r['mean_ic']:>12.4f}", end="")
+        else:
+            print(f" {'N/A':>12}", end="")
+    print()
+
+    print(f"  {'IC > 0 %':<30}", end="")
+    for r in results:
+        if "ic_positive_pct" in r:
+            print(f" {r['ic_positive_pct']:>11.1f}%", end="")
+        else:
+            print(f" {'N/A':>12}", end="")
+    print()
+
+    # Prediction stats for MU
+    print(f"\n  {'-'*66}")
+    print(f"  {'MU Prediction Stats':<30}")
+    for stat_name, stat_fn in [("Mean", "mean"), ("Std", "std"), ("Min", "min"), ("Max", "max")]:
+        print(f"  {'  ' + stat_name:<30}", end="")
+        for r in results:
+            if "mu_preds" in r:
+                val = getattr(r["mu_preds"]["score"], stat_fn)()
+                print(f" {val:>12.6f}", end="")
+            else:
+                print(f" {'N/A':>12}", end="")
+        print()
+
+    # Top 5 for each horizon
+    print(f"\n{'='*70}")
+    print(f"  Top 5 Stocks by Horizon (latest prediction date)")
+    print(f"{'='*70}")
+    for r in results:
+        if "latest_preds" not in r:
+            continue
+        top5 = r["latest_preds"].sort_values("score", ascending=False).head(5)
+        print(f"\n  {r['horizon']} ({r['latest_date'].date()}):")
+        print(f"    {'Rank':<6} {'Ticker':<10} {'Score':>12}")
+        print(f"    {'-'*30}")
+        for i, (ticker, row) in enumerate(top5.iterrows(), 1):
+            marker = " <--" if ticker == MICRON_TICKER else ""
+            print(f"    {i:<6} {ticker:<10} {row['score']:>12.6f}{marker}")
+
+    print(f"\n{'='*70}")
 
 
 def main():
-    print("=" * 60)
-    print("  Micron Technology (MU) Stock Analysis with Qlib")
+    print("=" * 70)
+    print("  Micron Technology (MU) — 30/60/90 Day Prediction Analysis")
     print("  Using LightGBM + Alpha158 Features")
-    print("=" * 60)
+    print("=" * 70)
     print()
 
     # Step 1: Download data
@@ -296,21 +381,30 @@ def main():
     available_stocks, _ = get_available_stocks()
     mu_found = check_micron_data(available_stocks)
 
-    # Step 4: Train model
-    print("Step 4/5: Train Model")
-    model, dataset, rid = train_model(available_stocks)
+    # Step 4: Train models for each horizon
+    print("Step 4/5: Training Models (30-day, 60-day, 90-day)")
+    models = {}
+    for horizon_name, horizon_days in HORIZONS.items():
+        print(f"\n  Training {horizon_name} model...")
+        model, dataset, rid = train_model_for_horizon(
+            horizon_name, horizon_days, available_stocks
+        )
+        models[horizon_name] = (model, dataset, horizon_days)
 
-    # Step 5: Analyze Micron predictions
-    print("\nStep 5/5: Analyze Predictions")
-    pred_df = analyze_micron_predictions(model, dataset, mu_found)
+    # Step 5: Generate predictions and analyze
+    print("\n\nStep 5/5: Generating Predictions")
+    results = []
+    for horizon_name, (model, dataset, horizon_days) in models.items():
+        print(f"  Predicting {horizon_name}...")
+        result = analyze_horizon(horizon_name, horizon_days, model, dataset, mu_found)
+        results.append(result)
 
-    print("\n" + "=" * 60)
-    print("  Analysis Complete!")
-    print("=" * 60)
+    # Print combined results
+    print_combined_results(results)
+
     print(f"\n  To explore further:")
-    print(f"    - Modify date ranges to test different periods")
+    print(f"    - Adjust horizons in the HORIZONS dict")
     print(f"    - Try different models (XGBoost, LSTM, Transformer)")
-    print(f"    - Adjust hyperparameters for better performance")
     print(f"    - Add more stocks to SEMICONDUCTOR_TECH_STOCKS list")
     print()
 
