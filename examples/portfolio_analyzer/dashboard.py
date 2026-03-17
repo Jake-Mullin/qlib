@@ -34,6 +34,8 @@ def render_verdicts_table(verdicts: List[StockVerdict]):
     table.add_column("Mom", justify="center", width=5)
     table.add_column("Target", justify="right", width=10)
     table.add_column("Upside", justify="right", width=8)
+    table.add_column("Fair Val", justify="right", width=10)
+    table.add_column("FV Upside", justify="right", width=9)
     table.add_column("Earnings", justify="center", width=10)
 
     for i, v in enumerate(sorted(verdicts, key=lambda x: x.score, reverse=True), 1):
@@ -41,6 +43,7 @@ def render_verdicts_table(verdicts: List[StockVerdict]):
               "Avoid": "bold red"}.get(v.verdict, "white")
         sc = "green" if v.score >= 7 else "yellow" if v.score >= 5 else "red"
         up_c = "green" if (v.upside_pct or 0) >= 0 else "red"
+        fv_c = "green" if (v.fair_value_upside or 0) >= 0 else "red"
 
         earn_str = ""
         if v.earnings_countdown is not None:
@@ -66,6 +69,8 @@ def render_verdicts_table(verdicts: List[StockVerdict]):
             f"{v.momentum_score:.1f}",
             f"${v.one_year_target:.2f}" if v.one_year_target else "N/A",
             f"[{up_c}]{v.upside_pct:+.1f}%[/{up_c}]" if v.upside_pct is not None else "N/A",
+            f"${v.fair_value:.2f}" if v.fair_value else "N/A",
+            f"[{fv_c}]{v.fair_value_upside:+.1f}%[/{fv_c}]" if v.fair_value_upside is not None else "N/A",
             earn_str,
         )
 

@@ -49,6 +49,15 @@ class StockData:
     current_ratio: Optional[float] = None
     free_cash_flow: Optional[float] = None
 
+    # Valuation inputs (for valuation engine)
+    shares_outstanding: Optional[float] = None
+    eps_trailing: Optional[float] = None
+    book_value: Optional[float] = None
+    ebitda: Optional[float] = None
+    total_debt: Optional[float] = None
+    total_cash: Optional[float] = None
+    ev_to_ebitda: Optional[float] = None
+
     # Analyst data
     analyst_target: Optional[float] = None
     analyst_recommendation: Optional[str] = None
@@ -105,6 +114,15 @@ def fetch_stock_data(ticker: str) -> StockData:
         data.debt_to_equity = info.get("debtToEquity")
         data.current_ratio = info.get("currentRatio")
         data.free_cash_flow = info.get("freeCashflow")
+
+        # Valuation inputs
+        data.shares_outstanding = info.get("sharesOutstanding")
+        data.eps_trailing = info.get("trailingEps")
+        data.book_value = info.get("bookValue")
+        data.ebitda = info.get("ebitda")
+        data.total_debt = info.get("totalDebt")
+        data.total_cash = info.get("totalCash")
+        data.ev_to_ebitda = info.get("enterpriseToEbitda")
 
         # Analyst
         data.analyst_target = info.get("targetMeanPrice")
@@ -165,3 +183,10 @@ def fetch_all_stocks(tickers: List[str]) -> Dict[str, StockData]:
     for ticker in tickers:
         results[ticker] = fetch_stock_data(ticker)
     return results
+
+
+def get_price_change(current: Optional[float], previous: Optional[float]) -> Optional[float]:
+    """Calculate percentage change between two prices."""
+    if current and previous and previous > 0:
+        return ((current - previous) / previous) * 100
+    return None

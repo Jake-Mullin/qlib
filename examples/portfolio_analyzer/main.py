@@ -35,6 +35,7 @@ from rich.panel import Panel
 from .data_fetcher import fetch_all_stocks, StockData
 from .scoring_agents import run_all_agents
 from .verdict_system import synthesize_verdict, StockVerdict, AgentVerdict
+from .valuation_engine import run_all_valuations
 from .macro_tracker import fetch_macro_dashboard, get_macro_adjustment, MacroDashboard
 from .dashboard import render_full_dashboard
 from .sector_heatmap import render_sector_heatmap
@@ -97,7 +98,7 @@ def analyze_stocks(tickers: list) -> tuple:
                         border_style="cyan"))
     stock_data = fetch_all_stocks(tickers)
 
-    # Score each stock
+    # Score each stock with multi-method valuation
     verdicts = []
     for ticker, data in stock_data.items():
         if data.fetch_error:
@@ -110,6 +111,10 @@ def analyze_stocks(tickers: list) -> tuple:
         agents = run_all_agents(data)
         bull, bear = build_bull_bear(data, agents)
 
+        # Run multi-method intrinsic valuation (DCF, Graham, PEG, EV/EBITDA, P/B)
+        stock_val = run_all_valuations(data)
+        fair_value = stock_val.composite_fair_value  # Confidence-weighted average
+
         verdict = synthesize_verdict(
             ticker=ticker,
             company_name=data.company_name,
@@ -121,6 +126,7 @@ def analyze_stocks(tickers: list) -> tuple:
             momentum_score=next((a.score for a in agents if a.agent_name == "Momentum"), 5.0),
             macro_adjustment=macro_adj,
             one_year_target=data.analyst_target,
+            fair_value=fair_value,
             next_earnings=data.next_earnings,
             bull_case=bull,
             bear_case=bear,

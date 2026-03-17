@@ -39,8 +39,10 @@ class StockVerdict:
     macro_adjustment: float = 0.0
 
     # Price targets
-    one_year_target: Optional[float] = None
-    upside_pct: Optional[float] = None
+    one_year_target: Optional[float] = None  # Analyst consensus target
+    upside_pct: Optional[float] = None       # Analyst consensus upside
+    fair_value: Optional[float] = None       # Intrinsic fair value (multi-method composite)
+    fair_value_upside: Optional[float] = None  # % upside to fair value
 
     # Earnings
     next_earnings: Optional[dt.date] = None
@@ -77,11 +79,18 @@ def synthesize_verdict(
     momentum_score: float = 0.0,
     macro_adjustment: float = 0.0,
     one_year_target: Optional[float] = None,
+    fair_value: Optional[float] = None,
     next_earnings: Optional[dt.date] = None,
     bull_case: Optional[List[str]] = None,
     bear_case: Optional[List[str]] = None,
 ) -> StockVerdict:
-    """Synthesize individual agent scores into a final verdict."""
+    """Synthesize individual agent scores into a final verdict.
+
+    Uses multi-method intrinsic valuation (fair_value) alongside analyst
+    consensus (one_year_target) to produce a blended price target.
+    Applies an upside-consistency guard: a stock with negative intrinsic
+    upside cannot receive a Buy verdict regardless of agent scores.
+    """
     # Agent consensus
     if agent_verdicts:
         agent_avg = sum(av.score for av in agent_verdicts) / len(agent_verdicts)
@@ -99,10 +108,35 @@ def synthesize_verdict(
     # Apply macro adjustment (slight nudge)
     adjusted = max(0, min(10, raw_score + macro_adjustment))
 
-    # Upside calculation
-    upside = None
+    # Analyst consensus upside
+    analyst_upside = None
     if one_year_target and current_price and current_price > 0:
-        upside = ((one_year_target - current_price) / current_price) * 100
+        analyst_upside = ((one_year_target - current_price) / current_price) * 100
+
+    # Intrinsic fair value upside
+    fv_upside = None
+    if fair_value and current_price and current_price > 0:
+        fv_upside = ((fair_value - current_price) / current_price) * 100
+
+    # Blended upside: weight intrinsic fair value + analyst target
+    # If both available, 60% intrinsic / 40% analyst (intrinsic is independent)
+    # If only one available, use that one
+    upside = None
+    if fv_upside is not None and analyst_upside is not None:
+        upside = fv_upside * 0.6 + analyst_upside * 0.4
+    elif fv_upside is not None:
+        upside = fv_upside
+    elif analyst_upside is not None:
+        upside = analyst_upside
+
+    # Upside-consistency guard (from briefing: negative upside + BUY = contradictory)
+    # If blended upside is negative, cap the score so verdict cannot be Buy
+    if upside is not None and upside < 0 and adjusted >= 7.5:
+        adjusted = min(adjusted, 7.4)  # Cap at high Hold
+
+    # If upside is significantly negative (<-15%), further penalize
+    if upside is not None and upside < -15 and adjusted >= 5.5:
+        adjusted = min(adjusted, 5.4)  # Drop to Pass
 
     # Earnings countdown
     countdown = None
@@ -124,6 +158,8 @@ def synthesize_verdict(
         macro_adjustment=macro_adjustment,
         one_year_target=one_year_target,
         upside_pct=round(upside, 2) if upside is not None else None,
+        fair_value=fair_value,
+        fair_value_upside=round(fv_upside, 2) if fv_upside is not None else None,
         next_earnings=next_earnings,
         earnings_countdown=countdown,
         bull_case=bull_case or [],
